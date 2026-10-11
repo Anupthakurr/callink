@@ -15,6 +15,7 @@ import audioop
 import ctypes
 import os
 import queue
+import threading
 import time
 import traceback
 
@@ -79,13 +80,33 @@ def prevent_sleep():
     """Instructs Windows to prevent entering sleep/standby while the gateway is active."""
     ES_CONTINUOUS = 0x80000000
     ES_SYSTEM_REQUIRED = 0x00000001
-    ES_AWAYMODE_REQUIRED = 0x00000040
+    ES_DISPLAY_REQUIRED = 0x00000002
     try:
         ctypes.windll.kernel32.SetThreadExecutionState(
-            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
         )
     except Exception:
         pass
+
+
+def start_stay_awake_heartbeat():
+    """Starts a continuous daemon thread that refreshes Windows stay-awake state every 15s."""
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_DISPLAY_REQUIRED = 0x00000002
+
+    def heartbeat_worker():
+        while True:
+            try:
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                )
+            except Exception:
+                pass
+            time.sleep(15)
+
+    thread = threading.Thread(target=heartbeat_worker, daemon=True, name="StayAwakeHeartbeat")
+    thread.start()
 
 
 def allow_sleep():
@@ -589,8 +610,9 @@ def main():
     # Ensure valid Gemini API key before proceeding
     ensure_gemini_api_key()
 
-    # Prevent Windows from sleeping while waiting for calls or in call
+    # Prevent Windows from sleeping while waiting for calls or in call (heartbeat daemon)
     prevent_sleep()
+    start_stay_awake_heartbeat()
 
     try:
         while True:
