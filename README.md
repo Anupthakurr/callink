@@ -48,7 +48,7 @@ Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversati
 
 ---
 
-##### Key Features
+## Key Features
 
 - **Direct Gemini Live Connection:** Direct streaming using the official `google-genai` SDK without intermediate SIP servers, Asterisk, or third-party wrappers.
 - **Ultra-Low Latency:** Streams audio in 20ms blocks (320 samples @ 16 kHz) directly over WebSockets.
