@@ -2,7 +2,7 @@
 
 A real-time Windows voice gateway bridging cellular telephone calls (via an Android smartphone connected over Bluetooth Hands-Free Profile / HFP) directly to Google's **Gemini Live API** (`gemini-3.1-flash-live-preview`).
 
-Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversations with anyone calling your phone number over the standard cellular GSM network.
+AllowS an AI agent to hold real-time, low-latency, full-duplex spoken conversations with anyone calling your phone number over the standard cellular GSM network.
 
 ---
 
