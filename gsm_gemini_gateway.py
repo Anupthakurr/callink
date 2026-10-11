@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import asyncio
 import audioop
+import ctypes
 import os
 import queue
 import time
@@ -31,6 +32,28 @@ except ImportError:
 # pip install google-genai
 from google import genai
 from google.genai import types
+
+
+def prevent_sleep():
+    """Instructs Windows to prevent entering sleep/standby while the gateway is active."""
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_AWAYMODE_REQUIRED = 0x00000040
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
+        )
+    except Exception:
+        pass
+
+
+def allow_sleep():
+    """Restores default Windows sleep/standby behavior."""
+    ES_CONTINUOUS = 0x80000000
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    except Exception:
+        pass
 
 
 def find_hfp_devices():
@@ -524,60 +547,66 @@ def main():
     print("========================================")
     print()
 
-    while True:
-        print("Waiting for smartphone cellular call...")
-        print()
+    # Prevent Windows from sleeping while waiting for calls or in call
+    prevent_sleep()
 
-        try:
-            while not PhoneCallManager.get_is_call_active():
-                time.sleep(0.5)
-
-            print("CELLULAR CALL ACTIVE")
-            print("Starting AI gateway...")
+    try:
+        while True:
+            print("Waiting for smartphone cellular call...")
             print()
 
-        except KeyboardInterrupt:
-            print("Stopping...")
-            return
-
-        bridge = HFPBridge()
-
-        try:
-            bridge.start()
-
-            async def runner():
-                # Bound strictly to the running event loop of asyncio.run()
-                stop_event = asyncio.Event()
-                await asyncio.gather(
-                    run_gemini_bridge(bridge, stop_event),
-                    watch_call_and_hfp(bridge, stop_event),
-                )
-
-            asyncio.run(runner())
-
-            print("CELLULAR CALL ENDED")
-            print("Stopping gateway session...")
-
-        except KeyboardInterrupt:
-            print("Stopping...")
-            break
-
-        except Exception as e:
-            print(f"\nFATAL ERROR: {type(e).__name__}: {e}")
-            traceback.print_exc(file=sys.stdout)
-
-        finally:
             try:
-                bridge.stop()
-            except Exception:
-                pass
-            print("Gateway session cleaned up.\n")
+                while not PhoneCallManager.get_is_call_active():
+                    time.sleep(0.5)
 
-        # Wait until cellular call is fully cleared before listening for the next call
-        while PhoneCallManager.get_is_call_active():
-            time.sleep(0.5)
+                print("CELLULAR CALL ACTIVE")
+                print("Starting AI gateway...")
+                print()
 
-    print("Gateway stopped.")
+            except KeyboardInterrupt:
+                print("Stopping...")
+                return
+
+            bridge = HFPBridge()
+
+            try:
+                bridge.start()
+
+                async def runner():
+                    # Bound strictly to the running event loop of asyncio.run()
+                    stop_event = asyncio.Event()
+                    await asyncio.gather(
+                        run_gemini_bridge(bridge, stop_event),
+                        watch_call_and_hfp(bridge, stop_event),
+                    )
+
+                asyncio.run(runner())
+
+                print("CELLULAR CALL ENDED")
+                print("Stopping gateway session...")
+
+            except KeyboardInterrupt:
+                print("Stopping...")
+                break
+
+            except Exception as e:
+                print(f"\nFATAL ERROR: {type(e).__name__}: {e}")
+                traceback.print_exc(file=sys.stdout)
+
+            finally:
+                try:
+                    bridge.stop()
+                except Exception:
+                    pass
+                print("Gateway session cleaned up.\n")
+
+            # Wait until cellular call is fully cleared before listening for the next call
+            while PhoneCallManager.get_is_call_active():
+                time.sleep(0.5)
+
+    finally:
+        allow_sleep()
+        print("Gateway stopped.")
 
 
 if __name__ == "__main__":
