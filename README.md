@@ -160,13 +160,14 @@ Want to share Callink with a friend? Choose the option that fits best:
 - Your friend simply double-clicks **`run.bat`**.
 - It checks Python, prompts for their `GEMINI_API_KEY` on first launch, builds the virtual environment, and starts Callink automatically.
 
-### Option 2: Standalone Portable Executable (.exe) (No Python required)
-If your friend does not have Python installed:
+### Option 2: Standalone Single Executable File (`Callink.exe`) (Zero Dependencies)
+If your friend does not have Python installed and you just want to send them **one single file**:
 1. On your PC, double-click **`build_exe.bat`** (or run `pip install pyinstaller && build_exe.bat`).
-2. This compiles everything into a self-contained portable folder: `dist\CallinkGateway\`.
-3. Copy or create `.env` inside `dist\CallinkGateway\` (with `GEMINI_API_KEY=...`).
-4. Zip the `CallinkGateway` folder and send it to your friend.
-5. They can extract the zip and double-click `CallinkGateway.exe` directly.
+2. This compiles everything into a single standalone file: **`dist\Callink.exe`**.
+3. Send **`Callink.exe`** directly to your friend (via Google Drive, Telegram, USB, etc.).
+4. Your friend simply double-clicks **`Callink.exe`**:
+   - Zero installation or Python required.
+   - If they haven't set up an API key, the console will prompt them on first launch to enter their `GEMINI_API_KEY` and save it automatically for all future runs!
 
 ---
 

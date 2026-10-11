@@ -1,9 +1,9 @@
 @echo off
 setlocal
-title Build Callink Standalone Executable
+title Build Callink Standalone Executable (.exe)
 
 echo ============================================================
-echo           BUILDING CALLINK STANDALONE EXECUTABLE
+echo          BUILDING CALLINK STANDALONE .EXE EXECUTABLE
 echo ============================================================
 echo.
 
@@ -13,9 +13,12 @@ if %ERRORLEVEL% neq 0 (
     pip install pyinstaller
 )
 
-echo Building standalone folder package in dist\CallinkGateway...
-pyinstaller --onedir --clean ^
-    --name "CallinkGateway" ^
+echo Building single-file executable: dist\Callink.exe ...
+echo (This may take 1-2 minutes to package all dependencies)
+echo.
+
+pyinstaller --onefile --clean ^
+    --name "Callink" ^
     --collect-all sounddevice ^
     --collect-all winrt ^
     --collect-all google.genai ^
@@ -32,12 +35,14 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo ============================================================
-echo [SUCCESS] Build finished!
-echo Executable folder created at: dist\CallinkGateway\
+echo [SUCCESS] Single standalone executable built successfully!
+echo Location: dist\Callink.exe
 echo.
 echo To share with a friend:
-echo 1. Copy .env into dist\CallinkGateway\ (or let them create one)
-echo 2. Zip the dist\CallinkGateway\ folder and send it to them!
-echo 3. They can just double-click CallinkGateway.exe to run.
+echo 1. Simply send them the single file: dist\Callink.exe
+echo 2. Your friend can double-click Callink.exe directly!
+echo    - No Python required.
+echo    - If GEMINI_API_KEY is not set, it will prompt them to enter it on first run.
 echo ============================================================
 pause
+

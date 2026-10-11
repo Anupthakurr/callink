@@ -34,6 +34,47 @@ from google import genai
 from google.genai import types
 
 
+def ensure_gemini_api_key() -> str:
+    """Validates GEMINI_API_KEY presence, prompting the user if missing."""
+    key = os.environ.get("GEMINI_API_KEY")
+    if key and key.strip():
+        return key.strip()
+
+    # Try loading from local directory next to the executable / script
+    app_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else os.getcwd()
+    env_file = os.path.join(app_dir, ".env")
+    if not os.path.exists(env_file):
+        env_file = os.path.join(os.getcwd(), ".env")
+
+    if os.path.exists(env_file):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(env_file)
+            key = os.environ.get("GEMINI_API_KEY")
+            if key and key.strip():
+                return key.strip()
+        except Exception:
+            pass
+
+    print("====================================================")
+    print(" [SETUP] Gemini API Key is required to run Callink")
+    print(" Get a free key at: https://aistudio.google.com/apikey")
+    print("====================================================")
+    key_input = input("Enter your GEMINI_API_KEY: ").strip()
+    if not key_input:
+        print("[ERROR] No API key entered. Exiting.")
+        sys.exit(1)
+
+    os.environ["GEMINI_API_KEY"] = key_input
+    try:
+        with open(env_file, "w") as f:
+            f.write(f"GEMINI_API_KEY={key_input}\n")
+        print(f"[SETUP] API key saved to {env_file}\n")
+    except Exception as e:
+        print(f"[SETUP Note] Could not save .env file: {e}\n")
+    return key_input
+
+
 def prevent_sleep():
     """Instructs Windows to prevent entering sleep/standby while the gateway is active."""
     ES_CONTINUOUS = 0x80000000
@@ -546,6 +587,9 @@ def main():
     print("   GSM -> GEMINI LIVE AI VOICE GATEWAY")
     print("========================================")
     print()
+
+    # Ensure valid Gemini API key before proceeding
+    ensure_gemini_api_key()
 
     # Prevent Windows from sleeping while waiting for calls or in call
     prevent_sleep()

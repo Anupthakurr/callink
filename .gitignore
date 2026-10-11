@@ -17,3 +17,9 @@ test_output_*.wav
 .idea/
 .DS_Store
 Thumbs.db
+
+# PyInstaller
+build/
+dist/
+*.spec
+
