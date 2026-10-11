@@ -69,7 +69,20 @@ Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversati
 
 ---
 
-## Installation & Setup
+## Quickstart (1-Click for Windows)
+
+The easiest way for you or a friend to run this on Windows:
+
+1. **Download or clone this folder** onto the PC.
+2. **Double-click `run.bat`**:
+   - Automatically checks for Python.
+   - Automatically prompts for your `GEMINI_API_KEY` on first launch (if `.env` is missing) and creates `.env`.
+   - Automatically creates an isolated virtual environment (`venv`) and installs dependencies.
+   - Automatically launches the gateway!
+
+---
+
+## Manual Setup
 
 ### 1. Clone the Repository
 ```bash
@@ -107,6 +120,18 @@ Start the gateway:
 ```bash
 python gsm_gemini_gateway.py
 ```
+*(Or simply double-click `run.bat`)*
+
+---
+
+## Packaging as Standalone Executable (.exe)
+
+If your friend does not have Python installed, you can compile the project into a standalone folder:
+
+1. Double-click **`build_exe.bat`** (or run `pip install pyinstaller && build_exe.bat`).
+2. This generates a portable bundle in `dist\CallinkGateway\`.
+3. Zip that `CallinkGateway` folder and send it to your friend!
+4. They can double-click `CallinkGateway.exe` directly without installing Python.
 
 ### Execution Flow:
 1. Discovers the Bluetooth `Hands-Free HF Audio` input and output endpoints.
