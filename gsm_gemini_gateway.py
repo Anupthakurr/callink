@@ -344,208 +344,244 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
         )
     )
 
-    print("Connecting to Gemini Live...")
+    is_initial_connect = True
 
-    try:
-        async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
-            print("Gemini Live session connected.")
-            print("Gateway active.\n")
+    while not stop_event.is_set():
+        # Verify cellular call is still active before establishing/re-establishing session
+        try:
+            if not PhoneCallManager.get_is_call_active():
+                break
+        except Exception:
+            pass
 
-            # Flush any stale audio buffered in to_ai during connection establishment
-            flushed = 0
-            while not bridge.to_ai.empty():
-                try:
-                    bridge.to_ai.get_nowait()
-                    flushed += 1
-                except queue.Empty:
-                    break
-            if flushed > 0:
-                print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
+        session_stop_event = asyncio.Event()
 
-            # Proactively prompt Gemini to greet the caller immediately upon connection
-            print("[Gateway] Requesting immediate AI greeting...")
-            try:
-                await session.send_client_content(
-                    turns=types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                text=(
-                                    "[A caller has just connected to the phone call. "
-                                    "Immediately greet them warmly and concisely in one short sentence, "
-                                    "such as 'Hello! Thanks for calling, how can I help you today?']"
-                                )
-                            )
-                        ],
-                    ),
-                    turn_complete=True,
-                )
-            except Exception as e:
-                print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
+        if is_initial_connect:
+            print("Connecting to Gemini Live...")
+        else:
+            print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session...")
 
-            async def sender():
-                """Drain caller audio from bridge.to_ai, stream to Gemini, and monitor for barge-in."""
-                consecutive_speech_chunks = 0
-                sent_chunks = 0
-                zero_chunks = 0
-                last_report = time.time()
-                latest_rms = 0
+        try:
+            async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
+                print("Gemini Live session connected.")
+                print("Gateway active.\n")
 
-                while not stop_event.is_set():
-                    # Periodic diagnostic heartbeat every 2 seconds
-                    now = time.time()
-                    if now - last_report >= 2.0:
-                        print(
-                            f"[Audio Status] Queue: {bridge.to_ai.qsize()}, "
-                            f"Mic frames: {bridge.total_input_frames}, "
-                            f"Sent: {sent_chunks}, Zeroes: {zero_chunks}, "
-                            f"Latest RMS: {latest_rms}"
-                        )
-                        last_report = now
-
+                # Flush any stale audio buffered in to_ai during connection establishment
+                flushed = 0
+                while not bridge.to_ai.empty():
                     try:
-                        pcm16 = bridge.to_ai.get_nowait()
+                        bridge.to_ai.get_nowait()
+                        flushed += 1
                     except queue.Empty:
-                        await asyncio.sleep(0.01)
-                        continue
-                    except Exception:
-                        continue
+                        break
+                if flushed > 0:
+                    print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
 
-                    latest_rms = audioop.rms(pcm16, 2)
-
-                    # Count silent/zero frames from phone mic for telemetry, but DO NOT drop them
-                    if not any(pcm16):
-                        zero_chunks += 1
-
-                    # Client-side barge-in detection:
-                    if not bridge.to_hfp.empty():
-                        ai_speaking_sec = (
-                            time.time() - bridge.playback_started_at
-                            if bridge.playback_started_at is not None
-                            else 0.0
+                # Proactively prompt Gemini to greet the caller on initial call pickup
+                if is_initial_connect:
+                    print("[Gateway] Requesting immediate AI greeting...")
+                    try:
+                        await session.send_client_content(
+                            turns=types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part(
+                                        text=(
+                                            "[A caller has just connected to the phone call. "
+                                            "Immediately greet them warmly and concisely in one short sentence, "
+                                            "such as 'Hello! Thanks for calling, how can I help you today?']"
+                                        )
+                                    )
+                                ],
+                            ),
+                            turn_complete=True,
                         )
-                        # Suppress false barge-in during the first 350ms of AI speech to prevent self-clipping from initial acoustic reflection
-                        if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
-                            if latest_rms > VAD_RMS_THRESHOLD:
-                                consecutive_speech_chunks += 1
-                                if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
-                                    print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
-                                    bridge.clear_playback()
+                    except Exception as e:
+                        print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
+                    is_initial_connect = False
+                else:
+                    print("[Gateway] Seamlessly reconnected mid-call! Continuing conversation.")
+
+                async def sender():
+                    """Drain caller audio from bridge.to_ai, stream to Gemini, and monitor for barge-in."""
+                    consecutive_speech_chunks = 0
+                    sent_chunks = 0
+                    zero_chunks = 0
+                    last_report = time.time()
+                    latest_rms = 0
+
+                    while not stop_event.is_set() and not session_stop_event.is_set():
+                        # Periodic diagnostic heartbeat every 2 seconds
+                        now = time.time()
+                        if now - last_report >= 2.0:
+                            print(
+                                f"[Audio Status] Queue: {bridge.to_ai.qsize()}, "
+                                f"Mic frames: {bridge.total_input_frames}, "
+                                f"Sent: {sent_chunks}, Zeroes: {zero_chunks}, "
+                                f"Latest RMS: {latest_rms}"
+                            )
+                            last_report = now
+
+                        try:
+                            pcm16 = bridge.to_ai.get_nowait()
+                        except queue.Empty:
+                            await asyncio.sleep(0.005)
+                            continue
+                        except Exception:
+                            continue
+
+                        latest_rms = audioop.rms(pcm16, 2)
+
+                        # Count silent/zero frames from phone mic for telemetry, but DO NOT drop them
+                        if not any(pcm16):
+                            zero_chunks += 1
+
+                        # Client-side barge-in detection:
+                        if not bridge.to_hfp.empty():
+                            ai_speaking_sec = (
+                                time.time() - bridge.playback_started_at
+                                if bridge.playback_started_at is not None
+                                else 0.0
+                            )
+                            # Suppress false barge-in during the first 350ms of AI speech to prevent self-clipping from initial acoustic reflection
+                            if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
+                                if latest_rms > VAD_RMS_THRESHOLD:
+                                    consecutive_speech_chunks += 1
+                                    if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
+                                        print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
+                                        bridge.clear_playback()
+                                        consecutive_speech_chunks = 0
+                                else:
                                     consecutive_speech_chunks = 0
                             else:
                                 consecutive_speech_chunks = 0
                         else:
                             consecutive_speech_chunks = 0
-                    else:
-                        consecutive_speech_chunks = 0
 
-                    try:
-                        await session.send_realtime_input(
-                            audio=types.Blob(
-                                data=pcm16,
-                                mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                        try:
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=pcm16,
+                                    mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                                )
                             )
-                        )
-                        sent_chunks += 1
-                        # If first chunk sent, log it
-                        if sent_chunks == 1:
-                            print(f"[Audio] First active audio chunk streamed to Gemini! (RMS={latest_rms})")
-                    except Exception as e:
-                        if not stop_event.is_set():
-                            print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
-                            stop_event.set()
-                        break
+                            sent_chunks += 1
+                            if sent_chunks == 1:
+                                print(f"[Audio] First active audio chunk streamed to Gemini! (RMS={latest_rms})")
+                        except Exception as e:
+                            if not stop_event.is_set() and not session_stop_event.is_set():
+                                print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
+                            session_stop_event.set()
+                            break
 
-            async def receiver():
-                """Pull Gemini's spoken response, resample, and push to bridge.to_hfp."""
-                leftover_bytes = bytearray()
-                chunk_size = 640  # 320 samples @ 16kHz 16-bit mono = exactly HFP_BLOCK
+                async def receiver():
+                    """Pull Gemini's spoken response, resample, and push to bridge.to_hfp."""
+                    leftover_bytes = bytearray()
+                    chunk_size = 640  # 320 samples @ 16kHz 16-bit mono = exactly HFP_BLOCK
 
-                while not stop_event.is_set():
-                    try:
-                        async for response in session.receive():
-                            if stop_event.is_set():
-                                break
+                    while not stop_event.is_set() and not session_stop_event.is_set():
+                        try:
+                            async for response in session.receive():
+                                if stop_event.is_set() or session_stop_event.is_set():
+                                    break
 
-                            server_content = response.server_content
-                            if server_content is None:
-                                continue
+                                server_content = response.server_content
+                                if server_content is None:
+                                    continue
 
-                            # Server-side interruption (Gemini Live detected user speech)
-                            if server_content.interrupted:
-                                print("[BARGE-IN] Server signaled interruption! Clearing playback queue.")
-                                bridge.clear_playback()
-                                leftover_bytes.clear()
-                                bridge._out_resample_state = None
-                                continue
+                                # Server-side interruption (Gemini Live detected user speech)
+                                if server_content.interrupted:
+                                    print("[BARGE-IN] Server signaled interruption! Clearing playback queue.")
+                                    bridge.clear_playback()
+                                    leftover_bytes.clear()
+                                    bridge._out_resample_state = None
+                                    continue
 
-                            # Extract synthesized audio
-                            audio_data = None
-                            if server_content.model_turn:
-                                for part in server_content.model_turn.parts:
-                                    if part.text:
-                                        print(f"[AI Transcript]: {part.text}")
-                                    if part.inline_data and part.inline_data.data:
-                                        audio_data = part.inline_data.data
-                                        break
-
-                            # If an interruption recently occurred, drop remaining stale audio from that turn
-                            if time.time() - bridge.last_interrupted_at < 0.3:
+                                # Extract synthesized audio
                                 audio_data = None
-                                leftover_bytes.clear()
+                                if server_content.model_turn:
+                                    for part in server_content.model_turn.parts:
+                                        if part.text:
+                                            print(f"[AI Transcript]: {part.text}")
+                                        if part.inline_data and part.inline_data.data:
+                                            audio_data = part.inline_data.data
+                                            break
 
-                            if audio_data is not None:
-                                pcm16_hfp = resample_for_hfp(audio_data, bridge)
-                                leftover_bytes.extend(pcm16_hfp)
-
-                                # Push complete 640-byte frames into playback queue
-                                while len(leftover_bytes) >= chunk_size:
-                                    frame = bytes(leftover_bytes[:chunk_size])
-                                    del leftover_bytes[:chunk_size]
-                                    try:
-                                        bridge.to_hfp.put_nowait(frame)
-                                    except queue.Full:
-                                        pass
-
-                            # If turn completes and leftover audio exists, flush it
-                            if server_content.turn_complete:
-                                print("[Gemini] Turn complete.")
-                                if len(leftover_bytes) > 0:
-                                    padding = chunk_size - len(leftover_bytes)
-                                    leftover_bytes.extend(b"\x00" * padding)
-                                    try:
-                                        bridge.to_hfp.put_nowait(bytes(leftover_bytes))
-                                    except queue.Full:
-                                        pass
+                                # If an interruption recently occurred, drop remaining stale audio from that turn
+                                if time.time() - bridge.last_interrupted_at < 0.3:
+                                    audio_data = None
                                     leftover_bytes.clear()
 
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as e:
-                        if not stop_event.is_set():
-                            rcvd = getattr(e, 'rcvd', None)
-                            sent = getattr(e, 'sent', None)
-                            code = getattr(e, 'code', None)
-                            reason = getattr(e, 'reason', '')
-                            print(f"[Receiver] Connection closed: {type(e).__name__}: {e} (code={code}, reason='{reason}', rcvd={rcvd}, sent={sent})")
-                            stop_event.set()
-                        break
+                                if audio_data is not None:
+                                    pcm16_hfp = resample_for_hfp(audio_data, bridge)
+                                    leftover_bytes.extend(pcm16_hfp)
 
-            send_task = asyncio.create_task(sender())
-            recv_task = asyncio.create_task(receiver())
+                                    # Push complete 640-byte frames into playback queue
+                                    while len(leftover_bytes) >= chunk_size:
+                                        frame = bytes(leftover_bytes[:chunk_size])
+                                        del leftover_bytes[:chunk_size]
+                                        try:
+                                            bridge.to_hfp.put_nowait(frame)
+                                        except queue.Full:
+                                            pass
 
-            await stop_event.wait()
+                                # If turn completes and leftover audio exists, flush it
+                                if server_content.turn_complete:
+                                    print("[Gemini] Turn complete.")
+                                    if len(leftover_bytes) > 0:
+                                        padding = chunk_size - len(leftover_bytes)
+                                        leftover_bytes.extend(b"\x00" * padding)
+                                        try:
+                                            bridge.to_hfp.put_nowait(bytes(leftover_bytes))
+                                        except queue.Full:
+                                            pass
+                                        leftover_bytes.clear()
 
-            send_task.cancel()
-            recv_task.cancel()
-            await asyncio.gather(send_task, recv_task, return_exceptions=True)
+                        except asyncio.CancelledError:
+                            break
+                        except Exception as e:
+                            if not stop_event.is_set() and not session_stop_event.is_set():
+                                code = getattr(e, 'code', None)
+                                reason = getattr(e, 'reason', '')
+                                print(f"[Receiver] Session closed: {type(e).__name__}: {e} (code={code}, reason='{reason}')")
+                            session_stop_event.set()
+                            break
 
-    except Exception as e:
-        if not stop_event.is_set():
-            print(f"Gemini Live error: {type(e).__name__}: {e}")
-    finally:
-        stop_event.set()
-        print("Gemini Live session closed.")
+                send_task = asyncio.create_task(sender())
+                recv_task = asyncio.create_task(receiver())
+
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(stop_event.wait()),
+                        asyncio.create_task(session_stop_event.wait()),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for p in pending:
+                    p.cancel()
+
+                send_task.cancel()
+                recv_task.cancel()
+                await asyncio.gather(send_task, recv_task, return_exceptions=True)
+
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"[Gemini Live] Session error: {type(e).__name__}: {e}")
+
+        # Check if cellular call is still active
+        try:
+            call_still_active = PhoneCallManager.get_is_call_active()
+        except Exception:
+            call_still_active = False
+
+        if not stop_event.is_set() and call_still_active:
+            print("\n[Gateway] Cellular call is still ongoing! Seamlessly reconnecting to a fresh Gemini Live session in 0.5s...")
+            await asyncio.sleep(0.5)
+        else:
+            break
+
+    print("Gemini Live session closed.")
+
 
 
 async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
