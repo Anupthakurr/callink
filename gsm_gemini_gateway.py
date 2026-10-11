@@ -84,8 +84,12 @@ GEMINI_OUT_RATE = 24000
 GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 
 # Barge-in VAD parameters (for client-side speech detection while AI is playing)
-VAD_RMS_THRESHOLD = 2000
-VAD_TRIGGER_CONSECUTIVE = 3  # ~60ms of speech above threshold
+# Calibrated for smartphone cellular HFP:
+# Ambient noise, breathing & earpiece acoustic leakage: RMS ~1000 - 2800
+# Real intentional speech: RMS ~4000 - 9000
+VAD_RMS_THRESHOLD = 3600
+VAD_TRIGGER_CONSECUTIVE = 5       # ~100ms of sustained speech above threshold (prevents pops/breaths from clipping AI)
+VAD_INITIAL_GRACE_PERIOD = 0.35   # 350ms grace period after AI speech starts before barge-in can trigger (prevents self-clipping)
 
 
 class HFPBridge:
@@ -107,6 +111,9 @@ class HFPBridge:
         self.total_input_frames = 0
         self.total_output_frames = 0
 
+        self.playback_started_at = None
+        self.last_interrupted_at = 0.0
+
     def input_callback(self, indata, frames, time_info, status):
         try:
             pcm16 = indata[:, 0].tobytes()
@@ -125,7 +132,11 @@ class HFPBridge:
             try:
                 pcm16 = self.to_hfp.get_nowait()
             except queue.Empty:
+                self.playback_started_at = None
                 return
+
+            if self.playback_started_at is None:
+                self.playback_started_at = time.time()
 
             samples = len(pcm16) // 2
             data = memoryview(pcm16).cast("h")
@@ -140,6 +151,8 @@ class HFPBridge:
 
     def clear_playback(self):
         """Immediately drain pending audio from to_hfp for instantaneous barge-in."""
+        self.last_interrupted_at = time.time()
+        self.playback_started_at = None
         drained_chunks = 0
         while not self.to_hfp.empty():
             try:
@@ -235,8 +248,9 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         system_instruction=(
-            "You are a helpful and polite phone agent answering calls for the business. "
-            "Speak conversationally in short, clear sentences as in a real phone call."
+            "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
+            "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
+            "Respond immediately and concisely without long preambles."
         ),
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
@@ -262,6 +276,27 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                     break
             if flushed > 0:
                 print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
+
+            # Proactively prompt Gemini to greet the caller immediately upon connection
+            print("[Gateway] Requesting immediate AI greeting...")
+            try:
+                await session.send_client_content(
+                    turns=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text=(
+                                    "[A caller has just connected to the phone call. "
+                                    "Immediately greet them warmly and concisely in one short sentence, "
+                                    "such as 'Hello! Thanks for calling, how can I help you today?']"
+                                )
+                            )
+                        ],
+                    ),
+                    turn_complete=True,
+                )
+            except Exception as e:
+                print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
 
             async def sender():
                 """Drain caller audio from bridge.to_ai, stream to Gemini, and monitor for barge-in."""
@@ -301,11 +336,20 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
 
                     # Client-side barge-in detection:
                     if not bridge.to_hfp.empty():
-                        if latest_rms > VAD_RMS_THRESHOLD:
-                            consecutive_speech_chunks += 1
-                            if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
-                                print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
-                                bridge.clear_playback()
+                        ai_speaking_sec = (
+                            time.time() - bridge.playback_started_at
+                            if bridge.playback_started_at is not None
+                            else 0.0
+                        )
+                        # Suppress false barge-in during the first 350ms of AI speech to prevent self-clipping from initial acoustic reflection
+                        if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
+                            if latest_rms > VAD_RMS_THRESHOLD:
+                                consecutive_speech_chunks += 1
+                                if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
+                                    print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
+                                    bridge.clear_playback()
+                                    consecutive_speech_chunks = 0
+                            else:
                                 consecutive_speech_chunks = 0
                         else:
                             consecutive_speech_chunks = 0
@@ -361,6 +405,11 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                                     if part.inline_data and part.inline_data.data:
                                         audio_data = part.inline_data.data
                                         break
+
+                            # If an interruption recently occurred, drop remaining stale audio from that turn
+                            if time.time() - bridge.last_interrupted_at < 0.3:
+                                audio_data = None
+                                leftover_bytes.clear()
 
                             if audio_data is not None:
                                 pcm16_hfp = resample_for_hfp(audio_data, bridge)
