@@ -52,9 +52,11 @@ Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversati
 
 - **Direct Gemini Live Connection:** Direct streaming using the official `google-genai` SDK without intermediate SIP servers, Asterisk, or third-party wrappers.
 - **Ultra-Low Latency:** Streams audio in 20ms blocks (320 samples @ 16 kHz) directly over WebSockets.
-- **Instant Barge-In (Interruption Handling):** 
-  - **Client-Side VAD:** Detects caller voice locally using RMS amplitude thresholding and immediately clears the playback queue to stop AI speech without waiting for network round-trips.
-  - **Server-Side VAD:** Coordinates with Gemini Live's native server-side interruption signals to synchronize conversation state.
+- **Immediate Proactive Greeting:** Automatically greets the caller within ~1.3 seconds of call pickup via `session.send_client_content`, eliminating awkward dead air.
+- **Anti-Cut Barge-In Engine:** 
+  - **Calibrated Client-Side VAD:** Thresholded at 3,600 RMS over 100ms with a 350ms speech start grace period, eliminating false mid-sentence cut-offs from breaths, room noise, and earpiece acoustic reflection.
+  - **Server-Side VAD Synchronization:** Coordinates with Gemini Live's native server-side interruption signals to synchronize conversational state.
+- **Windows Sleep Prevention (Stay-Awake):** Native Win32 `SetThreadExecutionState` integration prevents your PC/laptop from entering sleep or turning off Bluetooth/network while waiting for calls or in active conversation.
 - **Automatic Call Lifecycle:** Automatically initiates the AI gateway when an incoming call starts and cleanly tears down sessions when the call hangs up using Windows Runtime (`PhoneCallManager`).
 - **Resilient Reconnection:** Handles Bluetooth route transfers and link dropouts gracefully with automatic retry logic and safe resource cleanup.
 - **Continuous Multi-Call Operation:** Automatically resets into standby mode to handle subsequent incoming calls without process restarts.
@@ -122,31 +124,63 @@ python gsm_gemini_gateway.py
 ```
 *(Or simply double-click `run.bat`)*
 
----
-
-## Packaging as Standalone Executable (.exe)
-
-If your friend does not have Python installed, you can compile the project into a standalone folder:
-
-1. Double-click **`build_exe.bat`** (or run `pip install pyinstaller && build_exe.bat`).
-2. This generates a portable bundle in `dist\CallinkGateway\`.
-3. Zip that `CallinkGateway` folder and send it to your friend!
-4. They can double-click `CallinkGateway.exe` directly without installing Python.
-
 ### Execution Flow:
 1. Discovers the Bluetooth `Hands-Free HF Audio` input and output endpoints.
-2. Displays the startup banner and waits in standby:
+2. Enables Windows Stay-Awake mode (`SetThreadExecutionState`), displays the startup banner, and waits in standby:
    ```text
    Waiting for smartphone cellular call...
    ```
 3. When someone calls your phone:
-   - Cellular call is detected automatically.
-   - HFP audio bridge starts.
-   - Gemini Live session connects.
-   - AI converses with caller with real-time barge-in support.
+   - Cellular call is detected automatically via `PhoneCallManager`.
+   - HFP audio bridge starts and Gemini Live connects.
+   - AI immediately welcomes the caller (~1.3s proactive greeting).
+   - Real-time bidirectional voice conversation begins with robust barge-in support.
 4. When the call ends:
-   - Session tears down cleanly.
-   - Returns to standby waiting for the next call.
+   - Session tears down cleanly with zero zombie processes.
+   - Automatically returns to standby waiting for the next call.
+
+---
+
+## Packaging for Distribution
+
+Want to share Callink with a friend? Choose the option that fits best:
+
+### Option 1: 1-Click Batch Runner (Recommended if Python is installed)
+- Share the repository folder (or a `.zip` without `venv` and `.env`).
+- Your friend simply double-clicks **`run.bat`**.
+- It checks Python, prompts for their `GEMINI_API_KEY` on first launch, builds the virtual environment, and starts Callink automatically.
+
+### Option 2: Standalone Portable Executable (.exe) (No Python required)
+If your friend does not have Python installed:
+1. On your PC, double-click **`build_exe.bat`** (or run `pip install pyinstaller && build_exe.bat`).
+2. This compiles everything into a self-contained portable folder: `dist\CallinkGateway\`.
+3. Copy or create `.env` inside `dist\CallinkGateway\` (with `GEMINI_API_KEY=...`).
+4. Zip the `CallinkGateway` folder and send it to your friend.
+5. They can extract the zip and double-click `CallinkGateway.exe` directly.
+
+---
+
+## Troubleshooting & Tips
+
+### 1. Bluetooth HFP Device Not Found
+- Ensure your phone is paired in Windows **Settings > Bluetooth & devices**.
+- In your phone's Bluetooth settings (tap the gear icon next to your PC's name), ensure **Phone calls** is toggled ON.
+- In Windows Device Manager, ensure the Bluetooth Hands-Free Audio driver (`bthhfenum.sys`) is active and not disabled.
+
+### 2. Calls Not Triggering the Gateway
+- Callink uses Windows Runtime (`PhoneCallManager`) to monitor active cellular states.
+- Ensure Windows Phone Link / Call audio permissions are allowed.
+- The phone must be actively engaged in a cellular telephone call (PSTN/GSM), not an app-specific VoIP call (e.g. WhatsApp) unless routed through HFP.
+
+### 3. Laptop Sleep & Screen Lock
+- Callink automatically calls `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`) to prevent Windows from putting the CPU or Bluetooth adapter to sleep while listening for or handling calls.
+
+### 4. Barge-In & Voice Cut-Off Calibration
+- Default barge-in is calibrated for mobile cellular networks:
+  - `VAD_RMS_THRESHOLD = 3600` (avoids cutting off on breathing or earpiece acoustics)
+  - `VAD_CONSECUTIVE_FRAMES = 5` (~100ms continuous speech)
+  - `VAD_SPEECH_START_GRACE_PERIOD = 0.35` (350ms grace window after AI starts speaking)
+- If your friend's microphone input volume is unusually quiet or loud, adjust `VAD_RMS_THRESHOLD` in `gsm_gemini_gateway.py` or through the Windows sound input device volume slider.
 
 ---
 
@@ -160,3 +194,4 @@ If your friend does not have Python installed, you can compile the project into 
 ## License
 
 MIT License.
+
