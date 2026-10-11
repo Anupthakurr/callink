@@ -13,9 +13,12 @@ if %ERRORLEVEL% neq 0 (
     pip install pyinstaller
 )
 
+taskkill /f /im Callink.exe >nul 2>&1
+
 echo Building single-file executable: dist\Callink.exe ...
 echo (This may take 1-2 minutes to package all dependencies)
 echo.
+
 
 pyinstaller --onefile --clean ^
     --name "Callink" ^

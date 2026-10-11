@@ -392,11 +392,9 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
 
                     latest_rms = audioop.rms(pcm16, 2)
 
-                    # Skip uninitialized flatline digital zeroes (muted driver buffers)
+                    # Count silent/zero frames from phone mic for telemetry, but DO NOT drop them
                     if not any(pcm16):
                         zero_chunks += 1
-                        await asyncio.sleep(0.005)
-                        continue
 
                     # Client-side barge-in detection:
                     if not bridge.to_hfp.empty():
