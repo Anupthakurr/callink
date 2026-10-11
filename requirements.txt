@@ -1,0 +1,7 @@
+# Pinned dependencies tested for Windows GSM-to-Gemini Live Voice Gateway
+google-genai==1.47.0
+sounddevice==0.5.6
+winrt==1.0.21033.1
+python-dotenv==1.2.1
+numpy==2.0.2
+websockets==15.0.1

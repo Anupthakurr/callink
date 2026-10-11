@@ -1,0 +1,19 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Local audio test artifacts
+test_output_*.wav
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
