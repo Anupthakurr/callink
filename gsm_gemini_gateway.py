@@ -599,13 +599,16 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
 
         if not call_active:
             inactive_count += 1
-            # Require 3 consecutive checks (~1.5s) of inactivity to prevent transient glitches during call setup/handoff
-            if inactive_count >= 3:
+            # If the audio bridge is still running, allow up to 10 checks (~5.0s) to tolerate transient Phone Link / Bluetooth blips.
+            # If the audio bridge is already stopped, 6 checks (~3.0s) is sufficient.
+            threshold = 10 if bridge.is_healthy() else 6
+            if inactive_count >= threshold:
                 print("\nCellular call became inactive (PhoneCallManager reported call ended).")
                 stop_event.set()
                 break
         else:
             inactive_count = 0
+
 
         # Stream health check with a 3.0s grace period for initial Bluetooth link stabilization
         if time.time() - start_time > 3.0:
