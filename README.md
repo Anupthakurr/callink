@@ -65,9 +65,13 @@ Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversati
 
 ## Hardware & Operating System Requirements
 
-- **OS:** Windows 10 or Windows 11 (build 19041+ recommended)
-- **Phone:** Android smartphone with an active cellular SIM card
-- **Bluetooth:** PC with Bluetooth adapter paired to the smartphone with **Hands-Free Audio** enabled (creates `Hands-Free HF Audio` playback and recording endpoints).
+- **OS:** Windows 10 or Windows 11 (build 19041+ recommended).
+- **Phone:** Android smartphone with an active cellular SIM card.
+- **Phone Link Apps (Required for Bluetooth Pairing & Call Audio):**
+  - **On Windows:** Microsoft **Phone Link** (pre-installed on Windows 10/11 or free on Microsoft Store).
+  - **On Android:** Microsoft **Link to Windows** (free on Google Play Store).
+  - Both devices must be paired through Phone Link via Bluetooth with the **Calls** feature enabled. This creates the required `Hands-Free HF Audio` SCO endpoints and enables Windows `PhoneCallManager` to detect incoming GSM cellular calls.
+- **Bluetooth:** PC Bluetooth adapter paired to the phone with Hands-Free Audio enabled.
 
 ---
 
@@ -75,8 +79,11 @@ Allows an AI agent to hold real-time, low-latency, full-duplex spoken conversati
 
 The easiest way for you or a friend to run this on Windows:
 
-1. **Download or clone this folder** onto the PC.
-2. **Double-click `run.bat`**:
+1. **Pair Phone & PC via Phone Link:**
+   - Open **Phone Link** on Windows and **Link to Windows** on your Android phone.
+   - Pair via Bluetooth and complete the setup for **Calls** (make and receive calls on PC).
+2. **Download or clone this folder** onto the PC.
+3. **Double-click `run.bat`**:
    - Automatically checks for Python.
    - Automatically prompts for your `GEMINI_API_KEY` on first launch (if `.env` is missing) and creates `.env`.
    - Automatically creates an isolated virtual environment (`venv`) and installs dependencies.
@@ -110,9 +117,12 @@ Add your Google Gemini API key:
 GEMINI_API_KEY=your_actual_api_key_here
 ```
 
-### 4. Pair Your Smartphone
-1. In Windows Settings -> **Bluetooth & devices**, pair your Android phone.
-2. In device properties, verify that **Hands-Free** / **Audio** profiles are active.
+### 4. Pair Your Smartphone via Phone Link
+1. **On your Windows PC:** Open **Phone Link** (download from Microsoft Store if not pre-installed).
+2. **On your Android phone:** Install and launch **Link to Windows** from Google Play Store.
+3. **Pair via Bluetooth:** Follow the on-screen pairing guide (scan the QR code or sign into your Microsoft account).
+4. **Enable Call Permissions:** When prompted in Phone Link, set up the **Calls** feature and grant Bluetooth pairing and call log permissions on Android.
+5. **Verify Audio Profile:** Ensure the device appears with **Hands-Free HF Audio** playback and recording endpoints in Windows sound settings.
 
 ---
 
@@ -163,13 +173,13 @@ If your friend does not have Python installed:
 ## Troubleshooting & Tips
 
 ### 1. Bluetooth HFP Device Not Found
-- Ensure your phone is paired in Windows **Settings > Bluetooth & devices**.
+- Ensure Microsoft **Phone Link** on PC and **Link to Windows** on Android are paired and connected.
 - In your phone's Bluetooth settings (tap the gear icon next to your PC's name), ensure **Phone calls** is toggled ON.
 - In Windows Device Manager, ensure the Bluetooth Hands-Free Audio driver (`bthhfenum.sys`) is active and not disabled.
 
 ### 2. Calls Not Triggering the Gateway
 - Callink uses Windows Runtime (`PhoneCallManager`) to monitor active cellular states.
-- Ensure Windows Phone Link / Call audio permissions are allowed.
+- Ensure the **Calls** feature in the Windows **Phone Link** app is set up and permitted.
 - The phone must be actively engaged in a cellular telephone call (PSTN/GSM), not an app-specific VoIP call (e.g. WhatsApp) unless routed through HFP.
 
 ### 3. Laptop Sleep & Screen Lock
