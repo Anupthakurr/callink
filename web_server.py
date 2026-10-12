@@ -11,6 +11,17 @@ except Exception:
 
 import os
 import sys
+
+# Support windowed / no-console execution without crashes
+if sys.stdout is None:
+    class DummyWriter:
+        def write(self, *args, **kwargs): pass
+        def flush(self): pass
+        def reconfigure(self, **kwargs): pass
+    sys.stdout = DummyWriter()
+if sys.stderr is None:
+    sys.stderr = sys.stdout
+
 import json
 import time
 import asyncio
@@ -307,6 +318,7 @@ class WebGatewayServer:
         self.app.router.add_delete("/api/recordings/{call_id}", self.handle_delete_recording)
         self.app.router.add_get("/api/settings", self.handle_get_settings)
         self.app.router.add_post("/api/settings", self.handle_post_settings)
+        self.app.router.add_post("/api/shutdown", self.handle_post_shutdown)
 
         # WebSocket Routes
         self.app.router.add_get("/ws/telemetry", self.handle_ws_telemetry)
@@ -385,6 +397,13 @@ class WebGatewayServer:
             return web.json_response({"success": True, "settings": load_settings()})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
+
+    async def handle_post_shutdown(self, request):
+        async def _delayed_kill():
+            await asyncio.sleep(0.5)
+            os._exit(0)
+        asyncio.create_task(_delayed_kill())
+        return web.json_response({"success": True, "message": "Callink Gateway is stopping..."})
 
     async def handle_ws_telemetry(self, request):
         ws = web.WebSocketResponse()

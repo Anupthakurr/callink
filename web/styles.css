@@ -267,6 +267,19 @@ body {
   border-radius: var(--radius-full);
 }
 
+.nav-tab-quit {
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+  margin-left: 0.5rem;
+}
+
+.nav-tab-quit:hover {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* ==========================================================================
    Main Content Layout
    ========================================================================== */

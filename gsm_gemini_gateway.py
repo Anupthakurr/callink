@@ -1,9 +1,41 @@
 import sys
+import os
+import traceback
+
 sys.coinit_flags = 0
 
-# Ensure immediate line flushing for real-time console feedback
+# Support windowed / no-console execution with file logging
+_log_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else os.getcwd()
+_log_file = os.path.join(_log_dir, "callink_runtime.log")
+
+class TeeLogger:
+    def __init__(self):
+        try:
+            self.f = open(_log_file, "a", encoding="utf-8")
+        except Exception:
+            self.f = None
+    def write(self, text):
+        if self.f:
+            try:
+                self.f.write(text)
+                self.f.flush()
+            except Exception:
+                pass
+    def flush(self):
+        if self.f:
+            try: self.f.flush()
+            except Exception: pass
+    def reconfigure(self, **kwargs): pass
+
+logger = TeeLogger()
+if sys.stdout is None:
+    sys.stdout = logger
+if sys.stderr is None:
+    sys.stderr = logger
+
 try:
-    sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
 except Exception:
     pass
 
@@ -720,7 +752,7 @@ async def main_async():
     settings = load_settings()
     if settings.get("auto_launch_browser", True):
         def open_browser():
-            time.sleep(1.2)
+            time.sleep(0.5)
             try:
                 webbrowser.open(f"http://127.0.0.1:{web_server.port}")
             except Exception:
@@ -800,6 +832,9 @@ def main():
         asyncio.run(main_async())
     except KeyboardInterrupt:
         print("\nStopping Callink Gateway...")
+    except Exception as e:
+        print(f"\n[FATAL ERROR IN GATEWAY]: {type(e).__name__}: {e}")
+        traceback.print_exc()
     finally:
         allow_sleep()
         print("Gateway stopped.")

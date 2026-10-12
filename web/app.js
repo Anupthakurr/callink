@@ -67,8 +67,9 @@ function initTabs() {
   const tabs = document.querySelectorAll('.nav-tab');
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
+      if (!tab.dataset.tab) return;
       const targetPaneId = 'pane' + tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1);
-      tabs.forEach(t => t.classList.remove('active'));
+      tabs.forEach(t => { if (t.dataset.tab) t.classList.remove('active'); });
       tab.classList.add('active');
 
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -81,6 +82,24 @@ function initTabs() {
       }
     });
   });
+
+  const quitBtn = document.getElementById('btnQuitGateway');
+  if (quitBtn) {
+    quitBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to stop and quit the Callink Gateway?')) {
+        try {
+          await fetch('/api/shutdown', { method: 'POST' });
+        } catch (e) {}
+        document.body.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0b0f19;color:#e2e8f0;font-family:sans-serif;flex-direction:column;gap:16px;text-align:center;padding:20px;">
+            <div style="width:50px;height:50px;border-radius:50%;background:rgba(239,68,68,0.15);border:1px solid #ef4444;display:flex;align-items:center;justify-content:center;font-size:24px;">✓</div>
+            <h2 style="font-size:1.4rem;font-weight:700;">Callink Gateway Stopped</h2>
+            <p style="color:#94a3b8;max-width:400px;font-size:0.9rem;">The background engine and telephony bridge have been safely shut down. You can safely close this browser window.</p>
+          </div>
+        `;
+      }
+    });
+  }
 }
 
 // ==========================================================================
