@@ -694,10 +694,17 @@ async def main_async():
     in_dev, out_dev = find_hfp_devices(quiet=True)
     if in_dev is not None and out_dev is not None:
         try:
+            from web_server import clean_device_name
             devs = sd.query_devices()
-            web_server.state["hfp_input_name"] = devs[in_dev]["name"]
-            web_server.state["hfp_output_name"] = devs[out_dev]["name"]
+            clean_in = clean_device_name(devs[in_dev]["name"])
+            clean_out = clean_device_name(devs[out_dev]["name"])
+            web_server.state["hfp_input_name"] = clean_in
+            web_server.state["hfp_output_name"] = clean_out
             web_server.state["hfp_connected"] = True
+            if "(" in clean_in and ")" in clean_in:
+                m = re.search(r'\(([^)]+)\)', clean_in)
+                if m:
+                    web_server.state["hfp_alias"] = m.group(1).strip()
         except Exception:
             pass
 

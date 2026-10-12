@@ -598,6 +598,19 @@ body {
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
+.loading-icon {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  display: inline-flex;
+  animation: spinSysIcon 1.5s linear infinite;
+}
+
+@keyframes spinSysIcon {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .sys-details {
   display: flex;
   flex-direction: column;

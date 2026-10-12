@@ -32,13 +32,13 @@
     <div class="nav-status">
       <div id="statusPill" class="status-pill status-standby">
         <span class="status-dot"></span>
-        <span id="statusText">STANDBY — WAITING FOR CALL</span>
+        <span id="statusText">Connecting...</span>
       </div>
       <div id="devicePill" class="device-pill">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
         </svg>
-        <span id="deviceText">Bluetooth HFP: Checking...</span>
+        <span id="deviceText">Bluetooth HFP: Scanning...</span>
       </div>
     </div>
 
@@ -55,7 +55,7 @@
       <button class="nav-tab" data-tab="recordings" id="tabBtnRecordings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
         Recordings
-        <span id="recordingsBadge" class="tab-badge">0</span>
+        <span id="recordingsBadge" class="tab-badge">—</span>
       </button>
       <button class="nav-tab" data-tab="settings" id="tabBtnSettings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
@@ -103,14 +103,14 @@
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
               Dual-Channel Audio Levels
             </div>
-            <span class="card-tag">16 kHz 16-Bit PCM</span>
+            <span id="audioFormatBadge" class="card-tag">Querying...</span>
           </div>
 
           <div class="vu-meters-wrap">
             <!-- Caller Channel VU Meter -->
             <div class="vu-channel">
               <div class="channel-info">
-                <span class="channel-name">📞 Caller Mic (Channel L)</span>
+                <span class="channel-name" id="callerChannelLabel">📞 Caller Mic (Channel L)</span>
                 <span id="callerRmsVal" class="channel-val">RMS: 0</span>
               </div>
               <div class="meter-bar-track">
@@ -124,7 +124,7 @@
             <!-- Gemini AI Channel VU Meter -->
             <div class="vu-channel">
               <div class="channel-info">
-                <span class="channel-name">🤖 Gemini AI Voice (Channel R)</span>
+                <span class="channel-name" id="aiChannelLabel">🤖 Gemini AI Voice (Channel R)</span>
                 <span id="aiRmsVal" class="channel-val">RMS: 0</span>
               </div>
               <div class="meter-bar-track">
@@ -139,15 +139,15 @@
           <div class="audio-specs-footer">
             <div class="spec-item">
               <span class="spec-label">Recording Mode</span>
-              <span class="spec-val">Synchronized Stereo WAV</span>
+              <span id="recordingModeDisplay" class="spec-val">Detecting...</span>
             </div>
             <div class="spec-item">
               <span class="spec-label">VAD Barge-In RMS</span>
-              <span id="vadThresholdDisplay" class="spec-val">3,600 RMS</span>
+              <span id="vadThresholdDisplay" class="spec-val">Loading...</span>
             </div>
             <div class="spec-item">
-              <span class="spec-label">Latency Roundtrip</span>
-              <span class="spec-val highlight-green">~800ms</span>
+              <span class="spec-label">Roundtrip Latency</span>
+              <span id="latencyDisplay" class="spec-val highlight-green">Measuring...</span>
             </div>
           </div>
         </div>
@@ -159,36 +159,36 @@
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
               Hardware & Connectivity
             </div>
-            <span class="card-tag">Windows WinRT</span>
+            <span id="hardwarePlatformBadge" class="card-tag">Querying OS...</span>
           </div>
 
           <div class="system-pills-list">
             <div class="sys-item">
-              <div class="sys-icon active-icon" id="phoneLinkIcon">✓</div>
+              <div class="sys-icon loading-icon" id="phoneLinkIcon">⟳</div>
               <div class="sys-details">
                 <div class="sys-title">Microsoft Phone Link Calls</div>
-                <div class="sys-desc" id="phoneLinkDesc">WinRT PhoneCallManager auto-detector active</div>
+                <div class="sys-desc" id="phoneLinkDesc">Querying WinRT telephony status...</div>
               </div>
             </div>
             <div class="sys-item">
-              <div class="sys-icon active-icon" id="hfpIcon">✓</div>
+              <div class="sys-icon loading-icon" id="hfpIcon">⟳</div>
               <div class="sys-details">
                 <div class="sys-title">Bluetooth Hands-Free (HFP)</div>
-                <div class="sys-desc" id="hfpDesc">Hands-Free HF Audio SCO endpoint active</div>
+                <div class="sys-desc" id="hfpDesc">Scanning Bluetooth audio endpoints...</div>
               </div>
             </div>
             <div class="sys-item">
-              <div class="sys-icon active-icon" id="geminiApiIcon">✓</div>
+              <div class="sys-icon loading-icon" id="geminiApiIcon">⟳</div>
               <div class="sys-details">
                 <div class="sys-title">Google Gemini Live API</div>
-                <div class="sys-desc" id="geminiApiDesc">gemini-3.1-flash-live-preview connected</div>
+                <div class="sys-desc" id="geminiApiDesc">Validating API credentials & model...</div>
               </div>
             </div>
             <div class="sys-item">
-              <div class="sys-icon active-icon" id="stayAwakeIcon">✓</div>
+              <div class="sys-icon loading-icon" id="stayAwakeIcon">⟳</div>
               <div class="sys-details">
                 <div class="sys-title">Stay-Awake Guard</div>
-                <div class="sys-desc" id="stayAwakeDesc">Win32 SetThreadExecutionState prevents PC sleep</div>
+                <div class="sys-desc" id="stayAwakeDesc">Checking thread execution state...</div>
               </div>
             </div>
           </div>

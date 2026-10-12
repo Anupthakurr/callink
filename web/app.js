@@ -51,6 +51,7 @@ const PRESET_PROMPTS = {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTabs();
+  fetchStatusPolling();
   initTelemetryWebSocket();
   initMasterAudioPlayer();
   initRecordingsLibrary();
@@ -86,9 +87,17 @@ function initTabs() {
 // Live Telemetry & WebSockets
 // ==========================================================================
 
+let pingTimer = null;
+
 function initTelemetryWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
+
+  function sendPing(ws) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+    }
+  }
 
   function connect() {
     const ws = new WebSocket(wsUrl);
@@ -96,6 +105,9 @@ function initTelemetryWebSocket() {
 
     ws.onopen = () => {
       console.log('[Telemetry WS] Connected to gateway');
+      sendPing(ws);
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => sendPing(ws), 1500);
     };
 
     ws.onmessage = (event) => {
@@ -109,6 +121,15 @@ function initTelemetryWebSocket() {
 
     ws.onclose = () => {
       console.log('[Telemetry WS] Disconnected. Reconnecting in 2s...');
+      if (pingTimer) clearInterval(pingTimer);
+      const latencyDisplay = document.getElementById('latencyDisplay');
+      if (latencyDisplay) latencyDisplay.textContent = 'Reconnecting...';
+      const statusPill = document.getElementById('statusPill');
+      const statusText = document.getElementById('statusText');
+      if (statusPill && statusText) {
+        statusPill.className = 'status-pill status-standby';
+        statusText.textContent = 'GATEWAY RECONNECTING...';
+      }
       setTimeout(connect, 2000);
     };
 
@@ -127,6 +148,12 @@ function initTelemetryWebSocket() {
 function handleTelemetryMessage(msg) {
   if (msg.type === 'state_update') {
     updateGatewayState(msg.state);
+  } else if (msg.type === 'pong') {
+    const rtt = Math.max(1, Math.round(performance.now() - (msg.t || 0)));
+    const latencyDisplay = document.getElementById('latencyDisplay');
+    if (latencyDisplay) {
+      latencyDisplay.textContent = `${rtt}ms RTT (Live Telemetry)`;
+    }
   } else if (msg.type === 'call_started') {
     startLiveCallUI(msg.data.call_id, msg.data.call_type || 'gsm');
   } else if (msg.type === 'call_ended') {
@@ -156,15 +183,10 @@ function updateGatewayState(state) {
   const statusText = document.getElementById('statusText');
   const deviceText = document.getElementById('deviceText');
 
-  // HFP / Devices info
-  if (state.hfp_input_name && state.hfp_input_name !== 'Detecting...') {
-    deviceText.textContent = `HFP: ${state.hfp_input_name.slice(0, 24)}...`;
-  }
-
   // Update Status Pill
   if (state.status === 'in_call') {
     statusPill.className = 'status-pill status-in-call';
-    statusText.textContent = `${state.call_type === 'browser' ? 'BROWSER CALL' : 'GSM CELLULAR CALL'} IN PROGRESS`;
+    statusText.textContent = `${state.call_type === 'browser' ? 'BROWSER STUDIO CALL' : 'CELLULAR GSM CALL'} IN PROGRESS`;
     if (!appState.callActive) {
       startLiveCallUI(state.call_id, state.call_type);
     }
@@ -176,6 +198,52 @@ function updateGatewayState(state) {
     }
   }
 
+  // Device Pill (Top Nav)
+  if (state.hfp_connected) {
+    const alias = state.hfp_alias || '';
+    deviceText.textContent = `Bluetooth HFP: Connected${alias ? ' (' + alias + ')' : ''}`;
+  } else {
+    deviceText.textContent = 'Bluetooth HFP: Disconnected';
+  }
+
+  // Dynamic Specs & Format Tags
+  const audioFormatBadge = document.getElementById('audioFormatBadge');
+  if (audioFormatBadge && state.audio_format) {
+    audioFormatBadge.textContent = state.audio_format;
+  }
+
+  const callerChannelLabel = document.getElementById('callerChannelLabel');
+  if (callerChannelLabel) {
+    if (state.status === 'in_call' && state.call_type === 'browser') {
+      callerChannelLabel.textContent = '🎙️ Browser Microphone (Channel L)';
+    } else if (state.hfp_alias) {
+      callerChannelLabel.textContent = `📞 Caller Mic [${state.hfp_alias}] (Channel L)`;
+    } else {
+      callerChannelLabel.textContent = '📞 Caller Mic (Channel L)';
+    }
+  }
+
+  const aiChannelLabel = document.getElementById('aiChannelLabel');
+  if (aiChannelLabel) {
+    const voice = state.voice_name || 'Puck';
+    aiChannelLabel.textContent = `🤖 Gemini AI Voice [${voice}] (Channel R)`;
+  }
+
+  const recMode = document.getElementById('recordingModeDisplay');
+  if (recMode && state.recording_mode) {
+    recMode.textContent = state.recording_mode;
+  }
+
+  const vadEl = document.getElementById('vadThresholdDisplay');
+  if (vadEl && state.vad_threshold !== undefined) {
+    vadEl.textContent = `${Number(state.vad_threshold).toLocaleString()} RMS`;
+  }
+
+  const platBadge = document.getElementById('hardwarePlatformBadge');
+  if (platBadge && state.os_version) {
+    platBadge.textContent = state.os_version;
+  }
+
   // Update Hardware & Connectivity Card dynamically based on real hardware/API state
   const hfpIcon = document.getElementById('hfpIcon');
   const hfpDesc = document.getElementById('hfpDesc');
@@ -183,13 +251,11 @@ function updateGatewayState(state) {
     if (state.hfp_connected) {
       hfpIcon.textContent = '✓';
       hfpIcon.className = 'sys-icon active-icon';
-      hfpDesc.textContent = `Active: ${state.hfp_input_name}`;
-      deviceText.textContent = 'Bluetooth HFP: Connected';
+      hfpDesc.textContent = `Active: ${state.hfp_input_name} (SCO Audio Bridge Ready)`;
     } else {
       hfpIcon.textContent = '✕';
       hfpIcon.className = 'sys-icon inactive-icon';
       hfpDesc.textContent = 'Not connected — Pair smartphone in Microsoft Phone Link';
-      deviceText.textContent = 'Bluetooth HFP: Disconnected';
     }
   }
 
@@ -199,7 +265,7 @@ function updateGatewayState(state) {
     if (state.api_key_configured) {
       geminiIcon.textContent = '✓';
       geminiIcon.className = 'sys-icon active-icon';
-      geminiDesc.textContent = 'gemini-3.1-flash-live-preview (API Key Active)';
+      geminiDesc.textContent = `${state.gemini_model || 'gemini-3.1-flash-live-preview'} • Voice: ${state.voice_name || 'Puck'} (API Key Active)`;
     } else {
       geminiIcon.textContent = '✕';
       geminiIcon.className = 'sys-icon inactive-icon';
@@ -210,10 +276,18 @@ function updateGatewayState(state) {
   const phoneLinkIcon = document.getElementById('phoneLinkIcon');
   const phoneLinkDesc = document.getElementById('phoneLinkDesc');
   if (phoneLinkIcon && phoneLinkDesc) {
-    if (state.phone_link_ready !== false) {
+    if (state.phone_call_active) {
+      phoneLinkIcon.textContent = '📞';
+      phoneLinkIcon.className = 'sys-icon warning-icon';
+      phoneLinkDesc.textContent = 'Cellular Call Active (SCO audio bridge engaged)';
+    } else if (state.phone_call_incoming) {
+      phoneLinkIcon.textContent = '🔔';
+      phoneLinkIcon.className = 'sys-icon warning-icon';
+      phoneLinkDesc.textContent = 'Incoming Cellular Call Ringing...';
+    } else if (state.winrt_ready) {
       phoneLinkIcon.textContent = '✓';
       phoneLinkIcon.className = 'sys-icon active-icon';
-      phoneLinkDesc.textContent = 'WinRT PhoneCallManager auto-detector active';
+      phoneLinkDesc.textContent = 'WinRT PhoneCallManager auto-detector active (Standby)';
     } else {
       phoneLinkIcon.textContent = '✕';
       phoneLinkIcon.className = 'sys-icon inactive-icon';
@@ -233,6 +307,14 @@ function updateGatewayState(state) {
       stayAwakeIcon.className = 'sys-icon inactive-icon';
       stayAwakeDesc.textContent = 'Sleep prevention inactive';
     }
+  }
+
+  // Update recordings badge & count tag
+  if (state.recordings_count !== undefined) {
+    const badge = document.getElementById('recordingsBadge');
+    if (badge) badge.textContent = state.recordings_count;
+    const tag = document.getElementById('recordingsCountTag');
+    if (tag) tag.textContent = `${state.recordings_count} Total`;
   }
 
   // VU Meters Audio Level animation

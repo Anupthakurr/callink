@@ -20,18 +20,29 @@ import re
 def clean_device_name(name: str) -> str:
     if not name:
         return ""
-    clean = re.sub(r'^(Input|Output)\s*\(@System32[^;]+;', '', name, flags=re.IGNORECASE)
-    clean = clean.replace('%1', '').replace('%0', '').replace(';', ' ')
-    clean = re.sub(r'\s+', ' ', clean).strip(' ')
-    if clean.endswith(')') and clean.count(')') > clean.count('('):
-        clean = clean[:-1].strip()
-    return clean
+    # Match alias in ;(alias)) or (alias)
+    alias_match = re.search(r';\(([^)]+)\)\s*\)?$', name)
+    alias = alias_match.group(1).strip() if alias_match else ''
+    
+    if "hands-free hf audio" in name.lower():
+        base = "Hands-Free HF Audio"
+    elif "hands-free" in name.lower():
+        base = "Bluetooth Hands-Free"
+    else:
+        base = re.sub(r'\(?@System32[^;]+;?', '', name, flags=re.IGNORECASE)
+        base = re.sub(r'%[0-9]', '', base).replace(';', ' ')
+        base = re.sub(r'\s+', ' ', base).strip(' ()')
+    
+    if alias:
+        return f"{base} ({alias})"
+    return base
 
 def check_hfp_hardware():
     try:
         devices = sd.query_devices()
         in_name = None
         out_name = None
+        # 1. First priority: Hands-Free HF Audio (Phone Link cellular bridge)
         for d in devices:
             name = d.get("name", "")
             if "hands-free hf audio" in name.lower():
@@ -39,6 +50,15 @@ def check_hfp_hardware():
                     in_name = clean_device_name(name)
                 if d.get("max_output_channels", 0) > 0 and out_name is None:
                     out_name = clean_device_name(name)
+        # 2. Second priority: any other hands-free headset
+        if not (in_name and out_name):
+            for d in devices:
+                name = d.get("name", "")
+                if "hands-free" in name.lower():
+                    if d.get("max_input_channels", 0) > 0 and in_name is None:
+                        in_name = clean_device_name(name)
+                    if d.get("max_output_channels", 0) > 0 and out_name is None:
+                        out_name = clean_device_name(name)
         connected = (in_name is not None and out_name is not None)
         return connected, in_name, out_name
     except Exception:
@@ -105,6 +125,7 @@ class WebGatewayServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 5000):
         self.host = host
         self.port = port
+        self.start_time = time.time()
         self.app = web.Application()
         self.runner = None
         self.site = None
@@ -120,15 +141,69 @@ class WebGatewayServer:
             "call_start_time": None,
             "caller_rms": 0,
             "ai_rms": 0,
-            "hfp_input_name": "Detecting...",
-            "hfp_output_name": "Detecting...",
+            "hfp_input_name": "Scanning Bluetooth endpoints...",
+            "hfp_output_name": "Scanning Bluetooth endpoints...",
             "hfp_connected": False,
+            "hfp_alias": "",
             "api_key_configured": bool(os.environ.get("GEMINI_API_KEY")),
             "total_calls_today": 0,
             "live_transcripts": []
         }
 
         self.setup_routes()
+
+    def get_current_state_dict(self) -> dict:
+        import platform
+        connected, in_name, out_name = check_hfp_hardware()
+        self.state["hfp_connected"] = connected
+        self.state["hfp_input_name"] = in_name or "Not connected"
+        self.state["hfp_output_name"] = out_name or "Not connected"
+
+        # Extract alias like 'myvault'
+        alias = ""
+        if in_name and "(" in in_name and ")" in in_name:
+            m = re.search(r'\(([^)]+)\)', in_name)
+            if m:
+                alias = m.group(1).strip()
+        self.state["hfp_alias"] = alias
+
+        # Real OS Details
+        os_name = platform.system()
+        os_rel = platform.release()
+        os_ver = platform.version()
+        build_match = re.search(r'\.(\d+)$', os_ver)
+        build_str = f" Build {build_match.group(1)}" if build_match else ""
+        self.state["os_version"] = f"{os_name} {os_rel}{build_str} (WinRT)"
+
+        phone_active = False
+        phone_incoming = False
+        winrt_available = False
+        try:
+            from winrt.windows.applicationmodel.calls import PhoneCallManager
+            winrt_available = True
+            phone_active = PhoneCallManager.get_is_call_active()
+            phone_incoming = PhoneCallManager.get_is_call_incoming()
+        except Exception:
+            pass
+
+        self.state["winrt_ready"] = winrt_available
+        self.state["phone_call_active"] = phone_active
+        self.state["phone_call_incoming"] = phone_incoming
+
+        settings = load_settings()
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        self.state["api_key_configured"] = bool(api_key)
+        self.state["gemini_model"] = "gemini-3.1-flash-live-preview"
+        self.state["voice_name"] = settings.get("voice_name", "Puck")
+        self.state["vad_threshold"] = settings.get("vad_threshold", 3600)
+        self.state["audio_sample_rate"] = 16000
+        self.state["audio_format"] = "16 kHz 16-Bit PCM Mono SCO"
+        self.state["recording_mode"] = "Synchronized Stereo WAV (L: Caller | R: AI)"
+        self.state["stay_awake_active"] = True
+        self.state["recordings_count"] = len(get_all_recordings())
+        self.state["server_uptime"] = int(time.time() - self.start_time)
+
+        return dict(self.state)
 
     def setup_routes(self):
         # API Routes
@@ -155,21 +230,7 @@ class WebGatewayServer:
         return web.Response(text="Callink Web Platform is initializing...", content_type="text/html")
 
     async def handle_get_status(self, request):
-        hfp_connected, in_name, out_name = check_hfp_hardware()
-        self.state["hfp_connected"] = hfp_connected
-        self.state["hfp_input_name"] = in_name or "Not detected"
-        self.state["hfp_output_name"] = out_name or "Not detected"
-        self.state["api_key_configured"] = bool(os.environ.get("GEMINI_API_KEY"))
-
-        try:
-            from winrt.windows.applicationmodel.calls import PhoneCallManager
-            self.state["phone_link_ready"] = True
-        except Exception:
-            self.state["phone_link_ready"] = False
-
-        self.state["stay_awake_active"] = True
-
-        data = dict(self.state)
+        data = self.get_current_state_dict()
         return web.json_response(data)
 
     async def handle_get_recordings(self, request):
@@ -237,18 +298,29 @@ class WebGatewayServer:
         await ws.prepare(request)
         self.ws_clients.add(ws)
 
-        # Send immediate initial state
+        # Send immediate initial live state
         try:
+            current_state = self.get_current_state_dict()
             await ws.send_json({
                 "type": "state_update",
-                "state": self.state
+                "state": current_state
             })
         except Exception:
             pass
 
         try:
             async for msg in ws:
-                pass
+                if msg.type == WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "ping":
+                            await ws.send_json({
+                                "type": "pong",
+                                "t": data.get("t"),
+                                "server_time": time.time()
+                            })
+                    except Exception:
+                        pass
         finally:
             self.ws_clients.discard(ws)
         return ws
