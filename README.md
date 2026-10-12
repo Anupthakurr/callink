@@ -80,16 +80,21 @@ Callink was engineered to solve the prohibitive conversational latency inherent 
 
 ## Key Features
 
+- **Built-in Web Dashboard Platform:** Running Callink automatically opens an ultra-modern glassmorphic web dashboard (`http://localhost:5000`) for live monitoring, controlling settings, and reviewing conversations.
+- **Automated Dual-Track Call Recording:** Every telephone conversation is automatically recorded into studio-grade 16 kHz 16-bit stereo WAV files (`recordings/` folder):
+  - **Left Channel:** Clean caller voice from cellular Phone Link.
+  - **Right Channel:** AI assistant voice from Gemini Live.
+  - **Web Audio Channel Isolator:** Listen to Stereo, isolate Caller Only (Left), isolate AI Only (Right), or blend to Mixed Mono right in your browser!
+- **In-Browser Voice Studio:** Talk directly with the Gemini Live AI assistant inside the web browser using your laptop microphone and speakers to test prompts or record conversations without needing a phone!
+- **Conversation Transcripts & Metadata Library:** Real-time auto-scrolling conversation transcripts saved alongside each recording in JSON format with timestamps and event telemetry.
+- **Dynamic AI Persona & Voice Customizer:** Configure Gemini voice personas (Puck, Charon, Aoede, Fenrir, Kore) and customize system prompt scripts with pre-built business templates (Receptionist, Sales & Lead Qualifier, Appointment Scheduler, Support).
 - **Direct Gemini Live Connection:** Direct streaming using the official `google-genai` SDK without intermediate SIP servers, Asterisk, or third-party wrappers.
-- **Ultra-Low Latency:** Streams audio in 20ms blocks (320 samples @ 16 kHz) directly over WebSockets.
+- **Ultra-Low Latency:** Streams audio in 20ms blocks (320 samples @ 16 kHz) directly over WebSockets (~800ms roundtrip).
 - **Immediate Proactive Greeting:** Automatically greets the caller within ~1.3 seconds of call pickup via `session.send_client_content`, eliminating awkward dead air.
-- **Anti-Cut Barge-In Engine:** 
-  - **Calibrated Client-Side VAD:** Thresholded at 3,600 RMS over 100ms with a 350ms speech start grace period, eliminating false mid-sentence cut-offs from breaths, room noise, and earpiece acoustic reflection.
-  - **Server-Side VAD Synchronization:** Coordinates with Gemini Live's native server-side interruption signals to synchronize conversational state.
+- **Anti-Cut Barge-In Engine:** Calibrated client-side RMS VAD + server-side interruption synchronization for instantaneous natural conversational interruptions.
 - **Windows Sleep Prevention (Stay-Awake):** Native Win32 `SetThreadExecutionState` integration prevents your PC/laptop from entering sleep or turning off Bluetooth/network while waiting for calls or in active conversation.
 - **Automatic Call Lifecycle:** Automatically initiates the AI gateway when an incoming call starts and cleanly tears down sessions when the call hangs up using Windows Runtime (`PhoneCallManager`).
-- **Resilient Reconnection:** Handles Bluetooth route transfers and link dropouts gracefully with automatic retry logic and safe resource cleanup.
-- **Continuous Multi-Call Operation:** Automatically resets into standby mode to handle subsequent incoming calls without process restarts.
+- **1-Click Standalone Executable (.exe):** Package the gateway AND web platform into a single standalone `Callink.exe` file using `build_exe.bat`.
 
 ---
 

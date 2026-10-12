@@ -22,11 +22,14 @@ echo.
 
 pyinstaller --onefile --clean ^
     --name "Callink" ^
+    --add-data "web;web" ^
     --collect-all sounddevice ^
     --collect-all winrt ^
     --collect-all google.genai ^
+    --collect-all aiohttp ^
     --copy-metadata google-genai ^
     --copy-metadata sounddevice ^
+    --copy-metadata aiohttp ^
     gsm_gemini_gateway.py
 
 if %ERRORLEVEL% neq 0 (

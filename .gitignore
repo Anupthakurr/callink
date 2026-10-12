@@ -21,5 +21,6 @@ Thumbs.db
 # PyInstaller
 build/
 dist/
-*.spec
-
+# Recordings and user settings
+recordings/
+settings.json

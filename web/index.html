@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Callink — GSM AI Voice Gateway & Call Recording Platform</title>
+  <meta name="description" content="Real-time Windows GSM to Gemini Live AI voice gateway with automated dual-track call recording and analytics.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <div class="brand-logo-wrap">
+        <span class="brand-pulse"></span>
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>
+          </svg>
+        </div>
+      </div>
+      <div>
+        <div class="brand-title">Callink <span class="brand-badge">LIVE AI</span></div>
+        <div class="brand-subtitle">GSM Gateway & Telephony Recording Studio</div>
+      </div>
+    </div>
+
+    <!-- Live Status Indicators -->
+    <div class="nav-status">
+      <div id="statusPill" class="status-pill status-standby">
+        <span class="status-dot"></span>
+        <span id="statusText">STANDBY — WAITING FOR CALL</span>
+      </div>
+      <div id="devicePill" class="device-pill">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
+        </svg>
+        <span id="deviceText">Bluetooth HFP: Checking...</span>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" id="navTabs">
+      <button class="nav-tab active" data-tab="telemetry" id="tabBtnTelemetry">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Live Gateway
+      </button>
+      <button class="nav-tab" data-tab="studio" id="tabBtnStudio">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        Voice Studio
+      </button>
+      <button class="nav-tab" data-tab="recordings" id="tabBtnRecordings">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+        Recordings
+        <span id="recordingsBadge" class="tab-badge">0</span>
+      </button>
+      <button class="nav-tab" data-tab="settings" id="tabBtnSettings">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        AI Persona
+      </button>
+    </nav>
+  </header>
+
+  <!-- Main View Container -->
+  <main class="main-container">
+
+    <!-- ========================================== -->
+    <!-- TAB 1: LIVE GATEWAY & TELEMETRY -->
+    <!-- ========================================== -->
+    <section id="paneTelemetry" class="tab-pane active">
+      <!-- Active Call Alert Banner (Hidden when idle) -->
+      <div id="liveCallBanner" class="live-call-banner hidden">
+        <div class="banner-left">
+          <div class="call-pulse-ring">
+            <span class="ping"></span>
+            <span class="core"></span>
+          </div>
+          <div>
+            <div class="banner-heading" id="bannerCallTitle">CELLULAR CALL IN PROGRESS</div>
+            <div class="banner-sub" id="bannerCallSubtitle">Dual-track audio recording live to disk (Left: Caller | Right: AI)</div>
+          </div>
+        </div>
+        <div class="banner-right">
+          <div class="call-timer-box">
+            <span class="timer-label">CALL DURATION</span>
+            <span id="liveCallTimer" class="timer-digits">00:00</span>
+          </div>
+          <div id="bargeInAlert" class="barge-in-pill hidden">
+            ⚡ BARGE-IN INTERRUPT
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry Grid -->
+      <div class="telemetry-grid">
+        <!-- Live Audio VU Meters Card -->
+        <div class="glass-card vu-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+              Dual-Channel Audio Levels
+            </div>
+            <span class="card-tag">16 kHz 16-Bit PCM</span>
+          </div>
+
+          <div class="vu-meters-wrap">
+            <!-- Caller Channel VU Meter -->
+            <div class="vu-channel">
+              <div class="channel-info">
+                <span class="channel-name">📞 Caller Mic (Channel L)</span>
+                <span id="callerRmsVal" class="channel-val">RMS: 0</span>
+              </div>
+              <div class="meter-bar-track">
+                <div id="callerMeterBar" class="meter-bar caller-bar" style="width: 0%;"></div>
+                <div class="meter-ticks">
+                  <span>-40dB</span><span>-20dB</span><span>-6dB</span><span>0dB</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Gemini AI Channel VU Meter -->
+            <div class="vu-channel">
+              <div class="channel-info">
+                <span class="channel-name">🤖 Gemini AI Voice (Channel R)</span>
+                <span id="aiRmsVal" class="channel-val">RMS: 0</span>
+              </div>
+              <div class="meter-bar-track">
+                <div id="aiMeterBar" class="meter-bar ai-bar" style="width: 0%;"></div>
+                <div class="meter-ticks">
+                  <span>-40dB</span><span>-20dB</span><span>-6dB</span><span>0dB</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="audio-specs-footer">
+            <div class="spec-item">
+              <span class="spec-label">Recording Mode</span>
+              <span class="spec-val">Synchronized Stereo WAV</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">VAD Barge-In RMS</span>
+              <span id="vadThresholdDisplay" class="spec-val">3,600 RMS</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Latency Roundtrip</span>
+              <span class="spec-val highlight-green">~800ms</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hardware & System Status Card -->
+        <div class="glass-card hardware-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              Hardware & Connectivity
+            </div>
+            <span class="card-tag">Windows WinRT</span>
+          </div>
+
+          <div class="system-pills-list">
+            <div class="sys-item">
+              <div class="sys-icon active-icon">✓</div>
+              <div class="sys-details">
+                <div class="sys-title">Microsoft Phone Link Calls</div>
+                <div class="sys-desc" id="phoneLinkDesc">WinRT PhoneCallManager auto-detector active</div>
+              </div>
+            </div>
+            <div class="sys-item">
+              <div class="sys-icon active-icon">✓</div>
+              <div class="sys-details">
+                <div class="sys-title">Bluetooth Hands-Free (HFP)</div>
+                <div class="sys-desc" id="hfpDesc">Hands-Free HF Audio SCO endpoint active</div>
+              </div>
+            </div>
+            <div class="sys-item">
+              <div class="sys-icon active-icon">✓</div>
+              <div class="sys-details">
+                <div class="sys-title">Google Gemini Live API</div>
+                <div class="sys-desc" id="geminiApiDesc">gemini-3.1-flash-live-preview connected</div>
+              </div>
+            </div>
+            <div class="sys-item">
+              <div class="sys-icon active-icon">✓</div>
+              <div class="sys-details">
+                <div class="sys-title">Stay-Awake Guard</div>
+                <div class="sys-desc">Win32 SetThreadExecutionState prevents PC sleep</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Conversation Transcript Stream -->
+      <div class="glass-card transcript-card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            Live Conversation Stream
+          </div>
+          <button id="btnClearLiveTranscript" class="btn-sm btn-ghost">Clear Log</button>
+        </div>
+
+        <div id="liveTranscriptBox" class="transcript-stream-box">
+          <div class="transcript-placeholder" id="transcriptPlaceholder">
+            <div class="pulse-placeholder-dot"></div>
+            Waiting for an incoming GSM cellular call or Browser Studio session to begin transcription...
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- TAB 2: BROWSER CALL STUDIO -->
+    <!-- ========================================== -->
+    <section id="paneStudio" class="tab-pane">
+      <div class="studio-container">
+        <div class="glass-card studio-card">
+          <div class="studio-header">
+            <h2>Instant Voice Studio</h2>
+            <p>Talk directly with the Gemini Live AI voice agent through your computer microphone & speakers. Every session is automatically recorded into synchronized dual-track stereo WAV format with full transcripts.</p>
+          </div>
+
+          <div class="studio-interactive-wrap">
+            <div class="studio-visualizer-orb" id="studioOrb">
+              <div class="orb-ring ring-3"></div>
+              <div class="orb-ring ring-2"></div>
+              <div class="orb-ring ring-1"></div>
+              <div class="orb-center">
+                <svg id="studioMicIcon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
+                  <path d="M19 10v2a7 7 0 01-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="studio-status-wrap">
+              <div id="studioCallTimer" class="studio-timer">00:00</div>
+              <div id="studioStatusLabel" class="studio-label">Ready to begin conversation</div>
+            </div>
+
+            <div class="studio-actions">
+              <button id="btnStartBrowserCall" class="btn-primary btn-lg">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>
+                Start AI Voice Call
+              </button>
+              <button id="btnEndBrowserCall" class="btn-danger btn-lg hidden">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+                End Call & Save Recording
+              </button>
+            </div>
+          </div>
+
+          <!-- Studio Live Transcripts Box -->
+          <div class="studio-transcripts-section">
+            <div class="section-title">Session Transcripts</div>
+            <div id="studioTranscriptsBox" class="studio-transcripts-box">
+              <div class="transcript-placeholder">Transcripts will stream here as you speak with the AI...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- TAB 3: CALL RECORDINGS LIBRARY -->
+    <!-- ========================================== -->
+    <section id="paneRecordings" class="tab-pane">
+      <!-- Master Audio Player Card -->
+      <div id="masterPlayerCard" class="glass-card master-player-card">
+        <div class="player-top">
+          <div class="player-track-info">
+            <span class="playing-indicator">NOW PLAYING</span>
+            <h3 id="playerTrackTitle">Select a call recording from below</h3>
+            <p id="playerTrackMeta">—</p>
+          </div>
+          <!-- Channel Mode Switcher -->
+          <div class="channel-modes-wrap">
+            <span class="modes-label">Channel Mode:</span>
+            <div class="btn-group" id="channelModeGroup">
+              <button class="btn-toggle active" data-mode="stereo" id="btnModeStereo" title="Dual-track stereo: Left is caller, Right is AI">🎚️ Stereo (Dual)</button>
+              <button class="btn-toggle" data-mode="left" id="btnModeLeft" title="Isolate Caller only (Left channel)">👤 Caller Only</button>
+              <button class="btn-toggle" data-mode="right" id="btnModeRight" title="Isolate Gemini AI only (Right channel)">🤖 AI Only</button>
+              <button class="btn-toggle" data-mode="mono" id="btnModeMono" title="Mix both channels evenly to mono">🔀 Mixed Mono</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom Wave Scrub Bar -->
+        <div class="player-scrub-wrap">
+          <div class="time-readout" id="playerCurrentTime">00:00</div>
+          <div class="scrub-slider-wrap">
+            <input type="range" id="playerScrubSlider" min="0" max="100" value="0" step="0.1" class="scrub-slider">
+            <div id="scrubProgressFill" class="scrub-fill" style="width: 0%;"></div>
+          </div>
+          <div class="time-readout" id="playerTotalTime">00:00</div>
+        </div>
+
+        <!-- Controls Bar -->
+        <div class="player-controls-bar">
+          <div class="controls-left">
+            <button id="btnPlayerPlay" class="btn-play-pause">
+              <svg id="playIcon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg id="pauseIcon" class="hidden" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <div class="volume-box">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+              <input type="range" id="playerVolume" min="0" max="1" step="0.05" value="1" class="volume-slider">
+            </div>
+          </div>
+
+          <div class="controls-right">
+            <div class="speed-box">
+              <span class="speed-label">Speed:</span>
+              <select id="playerSpeedSelect" class="speed-select">
+                <option value="0.8">0.8x</option>
+                <option value="1.0" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+              </select>
+            </div>
+            <a id="btnDownloadActive" href="#" download class="btn-sm btn-primary">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download .WAV
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recordings List Header -->
+      <div class="recordings-header-row">
+        <div class="header-title-box">
+          <h2>Recorded Conversations</h2>
+          <span class="recordings-count-tag" id="recordingsCountTag">0 Total</span>
+        </div>
+        <div class="recordings-actions-box">
+          <button id="btnRefreshRecordings" class="btn-sm btn-ghost">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Recordings Cards Container -->
+      <div id="recordingsGrid" class="recordings-grid">
+        <div class="no-recordings" id="noRecordingsBox">
+          <div class="empty-icon">📼</div>
+          <h3>No recordings captured yet</h3>
+          <p>Incoming GSM cellular calls or Browser Studio voice conversations will be automatically saved here in dual-track stereo WAV format.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- TAB 4: AI PERSONA & SETTINGS -->
+    <!-- ========================================== -->
+    <section id="paneSettings" class="tab-pane">
+      <div class="settings-container">
+        <div class="glass-card settings-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm1 15h-2v-6h2zm0-8h-2V7h2z"/></svg>
+              Google Gemini Live Configuration
+            </div>
+          </div>
+
+          <div class="settings-body">
+            <!-- API Key -->
+            <div class="form-group">
+              <label for="inputApiKey">Gemini API Key</label>
+              <div class="input-with-action">
+                <input type="password" id="inputApiKey" placeholder="AIzaSy..." class="form-control">
+                <button type="button" id="btnToggleApiKey" class="btn-sm btn-ghost">Show</button>
+              </div>
+              <small class="form-hint">Obtain a free high-quota key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</small>
+            </div>
+
+            <!-- Voice Persona Selector -->
+            <div class="form-group">
+              <label for="selectVoice">AI Spoken Voice Persona</label>
+              <select id="selectVoice" class="form-control">
+                <option value="Puck">Puck — Youthful, energetic, friendly & engaging</option>
+                <option value="Charon">Charon — Warm, mature, authoritative & calm</option>
+                <option value="Aoede">Aoede — Melodic, expressive, soothing & bright</option>
+                <option value="Fenrir">Fenrir — Deep, bold, direct & confident</option>
+                <option value="Kore">Kore — Polite, crisp, executive & professional</option>
+              </select>
+            </div>
+
+            <!-- Presets -->
+            <div class="form-group">
+              <label>System Instruction Templates</label>
+              <div class="presets-row">
+                <button type="button" class="btn-preset" data-preset="receptionist">🏢 Front Desk Receptionist</button>
+                <button type="button" class="btn-preset" data-preset="sales">💼 Lead Qualification & Sales</button>
+                <button type="button" class="btn-preset" data-preset="appointment">📅 Appointment Scheduler</button>
+                <button type="button" class="btn-preset" data-preset="support">🛠️ Customer Support</button>
+              </div>
+            </div>
+
+            <!-- System Prompt Textarea -->
+            <div class="form-group">
+              <label for="textareaPrompt">System Prompt / Conversational Script</label>
+              <textarea id="textareaPrompt" rows="5" class="form-control code-font" placeholder="Enter instructions for the AI assistant..."></textarea>
+              <small class="form-hint">Instruct the AI to speak in short, natural sentences suitable for telephonic conversation.</small>
+            </div>
+
+            <!-- Barge-in Slider -->
+            <div class="form-group">
+              <div class="label-with-val">
+                <label for="sliderVad">Barge-In Sensitivity (RMS Threshold)</label>
+                <span id="sliderVadVal" class="slider-readout">3,600 RMS</span>
+              </div>
+              <input type="range" id="sliderVad" min="2000" max="6000" step="100" value="3600" class="form-range">
+              <small class="form-hint">Lower values = more sensitive to caller speech; Higher values = prevents false interrupts from background noise.</small>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" id="btnSaveSettings" class="btn-primary">
+                Save & Apply Settings
+              </button>
+              <span id="settingsSaveToast" class="save-toast hidden">✓ Settings saved successfully!</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Transcript Modal Drawer -->
+  <div id="transcriptModal" class="modal-backdrop hidden">
+    <div class="modal-box glass-card">
+      <div class="modal-header">
+        <h3 id="modalCallTitle">Call Transcripts</h3>
+        <button id="btnModalClose" class="btn-close">&times;</button>
+      </div>
+      <div id="modalTranscriptBody" class="modal-body">
+        <!-- Rendered conversation bubbles -->
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

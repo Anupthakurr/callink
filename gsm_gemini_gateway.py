@@ -18,6 +18,7 @@ import queue
 import threading
 import time
 import traceback
+import webbrowser
 
 # MUST import winrt before sounddevice to ensure COM is initialized in MTA mode
 from winrt.windows.applicationmodel.calls import PhoneCallManager
@@ -34,8 +35,11 @@ except ImportError:
 from google import genai
 from google.genai import types
 
+from call_recorder import CallRecorder
+from web_server import WebGatewayServer, load_settings, DEFAULT_SETTINGS
 
-def ensure_gemini_api_key() -> str:
+
+def ensure_gemini_api_key(allow_web_prompt: bool = True) -> str:
     """Validates GEMINI_API_KEY presence, prompting the user if missing."""
     key = os.environ.get("GEMINI_API_KEY")
     if key and key.strip():
@@ -57,23 +61,31 @@ def ensure_gemini_api_key() -> str:
         except Exception:
             pass
 
-    print("====================================================")
-    print(" [SETUP] Gemini API Key is required to run Callink")
-    print(" Get a free key at: https://aistudio.google.com/apikey")
-    print("====================================================")
-    key_input = input("Enter your GEMINI_API_KEY: ").strip()
-    if not key_input:
-        print("[ERROR] No API key entered. Exiting.")
-        sys.exit(1)
+    if allow_web_prompt:
+        print("================================================================")
+        print(" [SETUP] Gemini API Key is not set in environment or .env")
+        print(" You can configure it directly on the Callink Web Dashboard!")
+        print(" Or enter it now in this console.")
+        print(" Get a free key at: https://aistudio.google.com/apikey")
+        print("================================================================")
 
-    os.environ["GEMINI_API_KEY"] = key_input
+    # If stdin is an interactive terminal and not packaged headless
     try:
-        with open(env_file, "w") as f:
-            f.write(f"GEMINI_API_KEY={key_input}\n")
-        print(f"[SETUP] API key saved to {env_file}\n")
-    except Exception as e:
-        print(f"[SETUP Note] Could not save .env file: {e}\n")
-    return key_input
+        if sys.stdin and sys.stdin.isatty():
+            key_input = input("Enter GEMINI_API_KEY (or press Enter to configure via Web UI): ").strip()
+            if key_input:
+                os.environ["GEMINI_API_KEY"] = key_input
+                try:
+                    with open(env_file, "w") as f:
+                        f.write(f"GEMINI_API_KEY={key_input}\n")
+                    print(f"[SETUP] API key saved to {env_file}\n")
+                except Exception:
+                    pass
+                return key_input
+    except Exception:
+        pass
+
+    return ""
 
 
 def prevent_sleep():
@@ -118,8 +130,14 @@ def allow_sleep():
         pass
 
 
-def find_hfp_devices():
-    devices = sd.query_devices()
+def find_hfp_devices(quiet: bool = False):
+    """Discovers Windows Bluetooth Hands-Free HF Audio input and output devices."""
+    try:
+        devices = sd.query_devices()
+    except Exception as e:
+        if not quiet:
+            print(f"[Audio Error] Could not query audio devices: {e}")
+        return None, None
 
     input_device = None
     output_device = None
@@ -137,25 +155,17 @@ def find_hfp_devices():
         if device["max_output_channels"] > 0 and output_device is None:
             output_device = i
 
-    if input_device is None:
-        raise RuntimeError(
-            "Bluetooth HFP input device not found. "
-            "Make sure the smartphone is connected through Bluetooth Hands-Free."
-        )
+    if input_device is None or output_device is None:
+        if not quiet:
+            print("[INFO] Bluetooth HFP device not yet detected. Ready for phone pairing via Phone Link.")
+        return None, None
 
-    if output_device is None:
-        raise RuntimeError(
-            "Bluetooth HFP output device not found. "
-            "Make sure the smartphone is connected through Bluetooth Hands-Free."
-        )
-
-    print(f"HFP INPUT  : [{input_device}] {devices[input_device]['name']}")
-    print(f"HFP OUTPUT : [{output_device}] {devices[output_device]['name']}")
+    if not quiet:
+        print(f"HFP INPUT  : [{input_device}] {devices[input_device]['name']}")
+        print(f"HFP OUTPUT : [{output_device}] {devices[output_device]['name']}")
 
     return input_device, output_device
 
-
-HFP_INPUT, HFP_OUTPUT = find_hfp_devices()
 
 HFP_RATE = 16000       # native rate of the Windows HFP endpoint
 HFP_BLOCK = 320        # 20ms block @ 16kHz (320 samples = 640 bytes)
@@ -169,25 +179,23 @@ GEMINI_OUT_RATE = 24000
 GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 
 # Barge-in VAD parameters (for client-side speech detection while AI is playing)
-# Calibrated for smartphone cellular HFP:
-# Ambient noise, breathing & earpiece acoustic leakage: RMS ~1000 - 2800
-# Real intentional speech: RMS ~4000 - 9000
 VAD_RMS_THRESHOLD = 3600
-VAD_TRIGGER_CONSECUTIVE = 5       # ~100ms of sustained speech above threshold (prevents pops/breaths from clipping AI)
-VAD_INITIAL_GRACE_PERIOD = 0.35   # 350ms grace period after AI speech starts before barge-in can trigger (prevents self-clipping)
+VAD_TRIGGER_CONSECUTIVE = 5       # ~100ms of sustained speech above threshold
+VAD_INITIAL_GRACE_PERIOD = 0.35   # 350ms grace period after AI speech starts before barge-in triggers
 
 
 class HFPBridge:
     """Reads/writes the HFP device and exposes two queues:
     to_ai (caller's voice, for Gemini) and
-    to_hfp (AI's synthesized reply, played into the phone call)."""
+    to_hfp (AI's synthesized reply, played into the phone call).
+    Also tracks playback state for real-time dual-track conversation recording."""
 
     def __init__(self, in_dev=None, out_dev=None):
         self.to_ai = queue.Queue(maxsize=300)
         self.to_hfp = queue.Queue(maxsize=1000)
 
-        self.input_device = in_dev if in_dev is not None else HFP_INPUT
-        self.output_device = out_dev if out_dev is not None else HFP_OUTPUT
+        self.input_device = in_dev
+        self.output_device = out_dev
 
         self.input_stream = None
         self.output_stream = None
@@ -198,6 +206,7 @@ class HFPBridge:
 
         self.playback_started_at = None
         self.last_interrupted_at = 0.0
+        self.last_played_chunk = b"\x00" * 640
 
     def input_callback(self, indata, frames, time_info, status):
         try:
@@ -216,8 +225,10 @@ class HFPBridge:
 
             try:
                 pcm16 = self.to_hfp.get_nowait()
+                self.last_played_chunk = pcm16
             except queue.Empty:
                 self.playback_started_at = None
+                self.last_played_chunk = b"\x00" * 640
                 return
 
             if self.playback_started_at is None:
@@ -238,6 +249,7 @@ class HFPBridge:
         """Immediately drain pending audio from to_hfp for instantaneous barge-in."""
         self.last_interrupted_at = time.time()
         self.playback_started_at = None
+        self.last_played_chunk = b"\x00" * 640
         drained_chunks = 0
         while not self.to_hfp.empty():
             try:
@@ -258,8 +270,19 @@ class HFPBridge:
             return False
 
     def start(self):
+        # Dynamically discover endpoints if not provided
+        if self.input_device is None or self.output_device is None:
+            in_dev, out_dev = find_hfp_devices(quiet=True)
+            if in_dev is None or out_dev is None:
+                raise RuntimeError(
+                    "Bluetooth Hands-Free (HFP) endpoint not found. "
+                    "Please ensure phone is paired via Microsoft Phone Link."
+                )
+            self.input_device = in_dev
+            self.output_device = out_dev
+
         try:
-            print("Opening HFP input...")
+            print(f"Opening HFP input [{self.input_device}]...")
             self.input_stream = sd.InputStream(
                 device=self.input_device,
                 samplerate=HFP_RATE,
@@ -270,7 +293,7 @@ class HFPBridge:
             )
             print("HFP input opened.")
 
-            print("Opening HFP output...")
+            print(f"Opening HFP output [{self.output_device}]...")
             self.output_stream = sd.OutputStream(
                 device=self.output_device,
                 samplerate=HFP_RATE,
@@ -282,12 +305,12 @@ class HFPBridge:
             print("HFP output opened.")
 
             self.input_stream.start()
-            print("HFP input started.")
+            print("HFP input stream started.")
 
             self.output_stream.start()
-            print("HFP output started.")
+            print("HFP output stream started.")
 
-            print("HFP bridge audio running.")
+            print("HFP audio bridge running.\n")
         except Exception:
             self.stop()
             raise
@@ -319,27 +342,33 @@ def resample_for_hfp(pcm_24k: bytes, bridge: HFPBridge = None) -> bytes:
     return pcm_16k
 
 
-async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
+async def run_gemini_bridge(
+    bridge: HFPBridge,
+    stop_event: asyncio.Event,
+    recorder: CallRecorder = None,
+    web_server: WebGatewayServer = None
+):
     """Owns the Gemini Live session for the duration of one call.
-    Pulls caller audio from bridge.to_ai, streams it to Gemini,
-    and pushes Gemini's spoken reply onto bridge.to_hfp."""
+    Streams caller audio to Gemini, plays synthesized replies into phone call,
+    records synchronized dual-track stereo WAV audio, and streams telemetry to Web UI."""
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set!")
+        raise RuntimeError("GEMINI_API_KEY is not configured! Please configure it on the Web Platform.")
+
+    settings = load_settings()
+    voice_name = settings.get("voice_name", "Puck")
+    system_instruction = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+    vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
 
     client = genai.Client(api_key=api_key)
 
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        system_instruction=(
-            "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
-            "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
-            "Respond immediately and concisely without long preambles."
-        ),
+        system_instruction=system_instruction,
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
             )
         )
     )
@@ -347,7 +376,7 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
     is_initial_connect = True
 
     while not stop_event.is_set():
-        # Verify cellular call is still active before establishing/re-establishing session
+        # Verify cellular call is still active
         try:
             if not PhoneCallManager.get_is_call_active():
                 break
@@ -357,16 +386,16 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
         session_stop_event = asyncio.Event()
 
         if is_initial_connect:
-            print("Connecting to Gemini Live...")
+            print("Connecting to Gemini Live API...")
         else:
             print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session...")
 
         try:
             async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
                 print("Gemini Live session connected.")
-                print("Gateway active.\n")
+                print("AI Voice Gateway active.\n")
 
-                # Flush any stale audio buffered in to_ai during connection establishment
+                # Flush stale audio buffered in to_ai during connection
                 flushed = 0
                 while not bridge.to_ai.empty():
                     try:
@@ -377,7 +406,7 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                 if flushed > 0:
                     print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
 
-                # Proactively prompt Gemini to greet the caller on initial call pickup
+                # Proactively prompt Gemini to greet caller on pickup
                 if is_initial_connect:
                     print("[Gateway] Requesting immediate AI greeting...")
                     try:
@@ -403,7 +432,7 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                     print("[Gateway] Seamlessly reconnected mid-call! Continuing conversation.")
 
                 async def sender():
-                    """Drain caller audio from bridge.to_ai, stream to Gemini, and monitor for barge-in."""
+                    """Drain caller audio, write stereo recording, stream to Gemini, monitor barge-in."""
                     consecutive_speech_chunks = 0
                     sent_chunks = 0
                     zero_chunks = 0
@@ -411,15 +440,8 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                     latest_rms = 0
 
                     while not stop_event.is_set() and not session_stop_event.is_set():
-                        # Periodic diagnostic heartbeat every 2 seconds
                         now = time.time()
                         if now - last_report >= 2.0:
-                            print(
-                                f"[Audio Status] Queue: {bridge.to_ai.qsize()}, "
-                                f"Mic frames: {bridge.total_input_frames}, "
-                                f"Sent: {sent_chunks}, Zeroes: {zero_chunks}, "
-                                f"Latest RMS: {latest_rms}"
-                            )
                             last_report = now
 
                         try:
@@ -431,8 +453,17 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                             continue
 
                         latest_rms = audioop.rms(pcm16, 2)
+                        current_ai_chunk = bridge.last_played_chunk
+                        ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
 
-                        # Count silent/zero frames from phone mic for telemetry, but DO NOT drop them
+                        # Update web platform telemetry meters
+                        if web_server:
+                            web_server.update_audio_levels(latest_rms, ai_rms)
+
+                        # Write dual-track stereo block (Left: Caller, Right: AI)
+                        if recorder:
+                            recorder.write_stereo_block(pcm16, current_ai_chunk)
+
                         if not any(pcm16):
                             zero_chunks += 1
 
@@ -443,13 +474,16 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                                 if bridge.playback_started_at is not None
                                 else 0.0
                             )
-                            # Suppress false barge-in during the first 350ms of AI speech to prevent self-clipping from initial acoustic reflection
                             if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
-                                if latest_rms > VAD_RMS_THRESHOLD:
+                                if latest_rms > vad_threshold:
                                     consecutive_speech_chunks += 1
                                     if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
                                         print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
                                         bridge.clear_playback()
+                                        if recorder:
+                                            recorder.add_event("barge_in", {"rms": latest_rms})
+                                        if web_server:
+                                            asyncio.create_task(web_server.broadcast("barge_in", {"rms": latest_rms}))
                                         consecutive_speech_chunks = 0
                                 else:
                                     consecutive_speech_chunks = 0
@@ -466,8 +500,6 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                                 )
                             )
                             sent_chunks += 1
-                            if sent_chunks == 1:
-                                print(f"[Audio] First active audio chunk streamed to Gemini! (RMS={latest_rms})")
                         except Exception as e:
                             if not stop_event.is_set() and not session_stop_event.is_set():
                                 print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
@@ -475,7 +507,7 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                             break
 
                 async def receiver():
-                    """Pull Gemini's spoken response, resample, and push to bridge.to_hfp."""
+                    """Pull Gemini's spoken response, record transcripts, resample and push to HFP."""
                     leftover_bytes = bytearray()
                     chunk_size = 640  # 320 samples @ 16kHz 16-bit mono = exactly HFP_BLOCK
 
@@ -495,14 +527,22 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
                                     bridge.clear_playback()
                                     leftover_bytes.clear()
                                     bridge._out_resample_state = None
+                                    if recorder:
+                                        recorder.add_event("server_barge_in")
+                                    if web_server:
+                                        await web_server.broadcast("barge_in", {"type": "server"})
                                     continue
 
-                                # Extract synthesized audio
+                                # Extract synthesized audio & text transcripts
                                 audio_data = None
                                 if server_content.model_turn:
                                     for part in server_content.model_turn.parts:
                                         if part.text:
                                             print(f"[AI Transcript]: {part.text}")
+                                            if recorder:
+                                                recorder.add_transcript("model", part.text)
+                                            if web_server:
+                                                await web_server.broadcast("transcript", {"role": "model", "text": part.text})
                                         if part.inline_data and part.inline_data.data:
                                             audio_data = part.inline_data.data
                                             break
@@ -527,7 +567,6 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
 
                                 # If turn completes and leftover audio exists, flush it
                                 if server_content.turn_complete:
-                                    print("[Gemini] Turn complete.")
                                     if len(leftover_bytes) > 0:
                                         padding = chunk_size - len(leftover_bytes)
                                         leftover_bytes.extend(b"\x00" * padding)
@@ -575,13 +614,12 @@ async def run_gemini_bridge(bridge: HFPBridge, stop_event: asyncio.Event):
             call_still_active = False
 
         if not stop_event.is_set() and call_still_active:
-            print("\n[Gateway] Cellular call is still ongoing! Seamlessly reconnecting to a fresh Gemini Live session in 0.5s...")
+            print("\n[Gateway] Cellular call is still ongoing! Reconnecting to a fresh Gemini Live session in 0.5s...")
             await asyncio.sleep(0.5)
         else:
             break
 
     print("Gemini Live session closed.")
-
 
 
 async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
@@ -591,7 +629,6 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
     start_time = time.time()
 
     while not stop_event.is_set():
-        # Check call state
         try:
             call_active = PhoneCallManager.get_is_call_active()
         except Exception:
@@ -599,8 +636,6 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
 
         if not call_active:
             inactive_count += 1
-            # If the audio bridge is still running, allow up to 10 checks (~5.0s) to tolerate transient Phone Link / Bluetooth blips.
-            # If the audio bridge is already stopped, 6 checks (~3.0s) is sufficient.
             threshold = 10 if bridge.is_healthy() else 6
             if inactive_count >= threshold:
                 print("\nCellular call became inactive (PhoneCallManager reported call ended).")
@@ -609,8 +644,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
         else:
             inactive_count = 0
 
-
-        # Stream health check with a 3.0s grace period for initial Bluetooth link stabilization
+        # Stream health check with a 3.0s grace period
         if time.time() - start_time > 3.0:
             if not bridge.is_healthy():
                 print("\n[WARNING] Bluetooth HFP link dropped mid-call! Attempting to reconnect...")
@@ -621,13 +655,14 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
                     if not PhoneCallManager.get_is_call_active() or stop_event.is_set():
                         break
                     try:
-                        in_dev, out_dev = await loop.run_in_executor(None, find_hfp_devices)
-                        bridge.input_device = in_dev
-                        bridge.output_device = out_dev
-                        bridge.start()
-                        print("[INFO] Bluetooth HFP reconnected successfully!\n")
-                        reconnected = True
-                        break
+                        in_dev, out_dev = await loop.run_in_executor(None, find_hfp_devices, True)
+                        if in_dev is not None and out_dev is not None:
+                            bridge.input_device = in_dev
+                            bridge.output_device = out_dev
+                            bridge.start()
+                            print("[INFO] Bluetooth HFP reconnected successfully!\n")
+                            reconnected = True
+                            break
                     except Exception:
                         bridge.stop()
                         await asyncio.sleep(1.0)
@@ -640,73 +675,116 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
         await asyncio.sleep(0.5)
 
 
-def main():
-    print("========================================")
-    print("   GSM -> GEMINI LIVE AI VOICE GATEWAY")
-    print("========================================")
+async def main_async():
+    """Unified Asynchronous Application Entry Point."""
+    print("============================================================")
+    print("    CALLINK: GSM-TO-GEMINI LIVE VOICE GATEWAY & STUDIO")
+    print("============================================================")
     print()
 
-    # Ensure valid Gemini API key before proceeding
-    ensure_gemini_api_key()
-
-    # Prevent Windows from sleeping while waiting for calls or in call (heartbeat daemon)
+    ensure_gemini_api_key(allow_web_prompt=True)
     prevent_sleep()
     start_stay_awake_heartbeat()
 
+    # 1. Start the Web Platform Server
+    web_server = WebGatewayServer(port=5000)
+    await web_server.start()
+
+    # Update initial hardware detection in web_server state
+    in_dev, out_dev = find_hfp_devices(quiet=True)
+    if in_dev is not None and out_dev is not None:
+        try:
+            devs = sd.query_devices()
+            web_server.state["hfp_input_name"] = devs[in_dev]["name"]
+            web_server.state["hfp_output_name"] = devs[out_dev]["name"]
+            web_server.state["hfp_connected"] = True
+        except Exception:
+            pass
+
+    # 2. Auto-launch dashboard in default browser
+    settings = load_settings()
+    if settings.get("auto_launch_browser", True):
+        def open_browser():
+            time.sleep(1.2)
+            try:
+                webbrowser.open(f"http://127.0.0.1:{web_server.port}")
+            except Exception:
+                pass
+        threading.Thread(target=open_browser, daemon=True, name="BrowserLauncher").start()
+
+    print("============================================================")
+    print(f" Web Platform URL : http://localhost:{web_server.port}")
+    print(" Telephony Mode   : Automatic GSM Detection (WinRT)")
+    print(" Call Audio Mode  : Synchronized Stereo WAV (L: Caller | R: AI)")
+    print(" Browser Studio   : Available on Web Platform")
+    print("============================================================\n")
+
+    # 3. Main continuous standby loop for GSM cellular calls
+    while True:
+        print(f"[{time.strftime('%H:%M:%S')}] Standby: Monitoring for incoming cellular calls...")
+
+        # Wait until a cellular call is detected
+        while not PhoneCallManager.get_is_call_active():
+            await asyncio.sleep(0.5)
+
+        print("\n" + "="*50)
+        print(" >>> CELLULAR GSM CALL ACTIVE - STARTING AI VOICE GATEWAY <<<")
+        print("="*50)
+
+        # Initialize Dual-Track Audio Recorder
+        recorder = CallRecorder(call_type="gsm")
+        recorder.start()
+
+        # Update Server State
+        web_server.state["status"] = "in_call"
+        web_server.state["call_type"] = "gsm"
+        web_server.state["call_id"] = recorder.call_id
+        web_server.state["call_start_time"] = time.time()
+        web_server.state["live_transcripts"] = []
+        await web_server.broadcast("call_started", {"call_id": recorder.call_id, "call_type": "gsm"})
+
+        bridge = HFPBridge()
+
+        try:
+            bridge.start()
+            stop_event = asyncio.Event()
+            await asyncio.gather(
+                run_gemini_bridge(bridge, stop_event, recorder, web_server),
+                watch_call_and_hfp(bridge, stop_event),
+            )
+        except Exception as e:
+            print(f"\n[Gateway Session Error]: {type(e).__name__}: {e}")
+            traceback.print_exc(file=sys.stdout)
+        finally:
+            try:
+                bridge.stop()
+            except Exception:
+                pass
+
+            # Finalize call audio recording and broadcast to web platform
+            metadata = recorder.finish()
+            web_server.state["status"] = "standby"
+            web_server.state["call_type"] = None
+            web_server.state["call_id"] = None
+            web_server.state["call_start_time"] = None
+            web_server.state["caller_rms"] = 0
+            web_server.state["ai_rms"] = 0
+            await web_server.broadcast("call_ended", {"metadata": metadata})
+
+            print("="*50)
+            print(f" >>> CELLULAR CALL ENDED: Saved recording {metadata.get('wav_file')} ({metadata.get('duration_seconds')}s) <<<")
+            print("="*50 + "\n")
+
+        # Wait until cellular call is fully cleared before returning to standby
+        while PhoneCallManager.get_is_call_active():
+            await asyncio.sleep(0.5)
+
+
+def main():
     try:
-        while True:
-            print("Waiting for smartphone cellular call...")
-            print()
-
-            try:
-                while not PhoneCallManager.get_is_call_active():
-                    time.sleep(0.5)
-
-                print("CELLULAR CALL ACTIVE")
-                print("Starting AI gateway...")
-                print()
-
-            except KeyboardInterrupt:
-                print("Stopping...")
-                return
-
-            bridge = HFPBridge()
-
-            try:
-                bridge.start()
-
-                async def runner():
-                    # Bound strictly to the running event loop of asyncio.run()
-                    stop_event = asyncio.Event()
-                    await asyncio.gather(
-                        run_gemini_bridge(bridge, stop_event),
-                        watch_call_and_hfp(bridge, stop_event),
-                    )
-
-                asyncio.run(runner())
-
-                print("CELLULAR CALL ENDED")
-                print("Stopping gateway session...")
-
-            except KeyboardInterrupt:
-                print("Stopping...")
-                break
-
-            except Exception as e:
-                print(f"\nFATAL ERROR: {type(e).__name__}: {e}")
-                traceback.print_exc(file=sys.stdout)
-
-            finally:
-                try:
-                    bridge.stop()
-                except Exception:
-                    pass
-                print("Gateway session cleaned up.\n")
-
-            # Wait until cellular call is fully cleared before listening for the next call
-            while PhoneCallManager.get_is_call_active():
-                time.sleep(0.5)
-
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("\nStopping Callink Gateway...")
     finally:
         allow_sleep()
         print("Gateway stopped.")
