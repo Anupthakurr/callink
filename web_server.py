@@ -15,6 +15,17 @@ from call_recorder import (
     RECORDINGS_DIR,
 )
 import sounddevice as sd
+import re
+
+def clean_device_name(name: str) -> str:
+    if not name:
+        return ""
+    clean = re.sub(r'^(Input|Output)\s*\(@System32[^;]+;', '', name, flags=re.IGNORECASE)
+    clean = clean.replace('%1', '').replace('%0', '').replace(';', ' ')
+    clean = re.sub(r'\s+', ' ', clean).strip(' ')
+    if clean.endswith(')') and clean.count(')') > clean.count('('):
+        clean = clean[:-1].strip()
+    return clean
 
 def check_hfp_hardware():
     try:
@@ -25,9 +36,9 @@ def check_hfp_hardware():
             name = d.get("name", "")
             if "hands-free hf audio" in name.lower():
                 if d.get("max_input_channels", 0) > 0 and in_name is None:
-                    in_name = name
+                    in_name = clean_device_name(name)
                 if d.get("max_output_channels", 0) > 0 and out_name is None:
-                    out_name = name
+                    out_name = clean_device_name(name)
         connected = (in_name is not None and out_name is not None)
         return connected, in_name, out_name
     except Exception:
