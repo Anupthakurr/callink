@@ -586,6 +586,18 @@ body {
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
+.inactive-icon {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.warning-icon {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
 .sys-details {
   display: flex;
   flex-direction: column;

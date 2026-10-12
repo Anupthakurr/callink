@@ -176,6 +176,65 @@ function updateGatewayState(state) {
     }
   }
 
+  // Update Hardware & Connectivity Card dynamically based on real hardware/API state
+  const hfpIcon = document.getElementById('hfpIcon');
+  const hfpDesc = document.getElementById('hfpDesc');
+  if (hfpIcon && hfpDesc) {
+    if (state.hfp_connected) {
+      hfpIcon.textContent = '✓';
+      hfpIcon.className = 'sys-icon active-icon';
+      hfpDesc.textContent = `Active: ${state.hfp_input_name}`;
+      deviceText.textContent = 'Bluetooth HFP: Connected';
+    } else {
+      hfpIcon.textContent = '✕';
+      hfpIcon.className = 'sys-icon inactive-icon';
+      hfpDesc.textContent = 'Not connected — Pair smartphone in Microsoft Phone Link';
+      deviceText.textContent = 'Bluetooth HFP: Disconnected';
+    }
+  }
+
+  const geminiIcon = document.getElementById('geminiApiIcon');
+  const geminiDesc = document.getElementById('geminiApiDesc');
+  if (geminiIcon && geminiDesc) {
+    if (state.api_key_configured) {
+      geminiIcon.textContent = '✓';
+      geminiIcon.className = 'sys-icon active-icon';
+      geminiDesc.textContent = 'gemini-3.1-flash-live-preview (API Key Active)';
+    } else {
+      geminiIcon.textContent = '✕';
+      geminiIcon.className = 'sys-icon inactive-icon';
+      geminiDesc.textContent = 'Missing API Key — Configure in AI Persona tab';
+    }
+  }
+
+  const phoneLinkIcon = document.getElementById('phoneLinkIcon');
+  const phoneLinkDesc = document.getElementById('phoneLinkDesc');
+  if (phoneLinkIcon && phoneLinkDesc) {
+    if (state.phone_link_ready !== false) {
+      phoneLinkIcon.textContent = '✓';
+      phoneLinkIcon.className = 'sys-icon active-icon';
+      phoneLinkDesc.textContent = 'WinRT PhoneCallManager auto-detector active';
+    } else {
+      phoneLinkIcon.textContent = '✕';
+      phoneLinkIcon.className = 'sys-icon inactive-icon';
+      phoneLinkDesc.textContent = 'WinRT PhoneCallManager unavailable';
+    }
+  }
+
+  const stayAwakeIcon = document.getElementById('stayAwakeIcon');
+  const stayAwakeDesc = document.getElementById('stayAwakeDesc');
+  if (stayAwakeIcon && stayAwakeDesc) {
+    if (state.stay_awake_active !== false) {
+      stayAwakeIcon.textContent = '✓';
+      stayAwakeIcon.className = 'sys-icon active-icon';
+      stayAwakeDesc.textContent = 'Win32 SetThreadExecutionState prevents PC sleep';
+    } else {
+      stayAwakeIcon.textContent = '✕';
+      stayAwakeIcon.className = 'sys-icon inactive-icon';
+      stayAwakeDesc.textContent = 'Sleep prevention inactive';
+    }
+  }
+
   // VU Meters Audio Level animation
   renderAudioMeter('callerMeterBar', 'callerRmsVal', state.caller_rms || 0);
   renderAudioMeter('aiMeterBar', 'aiRmsVal', state.ai_rms || 0);

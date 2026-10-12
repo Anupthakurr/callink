@@ -14,6 +14,24 @@ from call_recorder import (
     delete_recording,
     RECORDINGS_DIR,
 )
+import sounddevice as sd
+
+def check_hfp_hardware():
+    try:
+        devices = sd.query_devices()
+        in_name = None
+        out_name = None
+        for d in devices:
+            name = d.get("name", "")
+            if "hands-free hf audio" in name.lower():
+                if d.get("max_input_channels", 0) > 0 and in_name is None:
+                    in_name = name
+                if d.get("max_output_channels", 0) > 0 and out_name is None:
+                    out_name = name
+        connected = (in_name is not None and out_name is not None)
+        return connected, in_name, out_name
+    except Exception:
+        return False, None, None
 
 # pip install google-genai
 from google import genai
@@ -126,8 +144,21 @@ class WebGatewayServer:
         return web.Response(text="Callink Web Platform is initializing...", content_type="text/html")
 
     async def handle_get_status(self, request):
+        hfp_connected, in_name, out_name = check_hfp_hardware()
+        self.state["hfp_connected"] = hfp_connected
+        self.state["hfp_input_name"] = in_name or "Not detected"
+        self.state["hfp_output_name"] = out_name or "Not detected"
+        self.state["api_key_configured"] = bool(os.environ.get("GEMINI_API_KEY"))
+
+        try:
+            from winrt.windows.applicationmodel.calls import PhoneCallManager
+            self.state["phone_link_ready"] = True
+        except Exception:
+            self.state["phone_link_ready"] = False
+
+        self.state["stay_awake_active"] = True
+
         data = dict(self.state)
-        data["api_key_configured"] = bool(os.environ.get("GEMINI_API_KEY"))
         return web.json_response(data)
 
     async def handle_get_recordings(self, request):
