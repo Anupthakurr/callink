@@ -1,3 +1,14 @@
+# Initialize WinRT COM MTA apartment before any other libraries initialize COM
+try:
+    import winrt
+    import winrt.windows.devices.bluetooth as bt
+    import winrt.windows.devices.radios as radios
+    import winrt.windows.devices.enumeration as enum
+except Exception:
+    bt = None
+    radios = None
+    enum = None
+
 import os
 import sys
 import json
@@ -37,111 +48,109 @@ def clean_device_name(name: str) -> str:
         return f"{base} ({alias})"
     return base
 
-import ctypes
-import uuid
-from ctypes import wintypes
+_bt_cache = {"timestamp": 0.0, "connected_names": set()}
 
-cfgmgr32 = ctypes.windll.cfgmgr32
-
-class DEVPROPKEY(ctypes.Structure):
-    _fields_ = [
-        ('fmtid', ctypes.c_byte * 16),
-        ('pid', wintypes.ULONG)
-    ]
-
-# DEVPKEY_Device_IsConnected: {83DA6326-97A6-4088-9453-A1923F573B29}, 15
-u_conn = uuid.UUID('{83DA6326-97A6-4088-9453-A1923F573B29}')
-PKEY_IS_CONNECTED = DEVPROPKEY()
-PKEY_IS_CONNECTED.fmtid = (ctypes.c_byte * 16)(*u_conn.bytes_le)
-PKEY_IS_CONNECTED.pid = 15
-
-# DEVPKEY_NAME: {b725f130-4704-43b4-a0be-2e0c4598340c}, 10
-u_name = uuid.UUID('{b725f130-4704-43b4-a0be-2e0c4598340c}')
-PKEY_NAME = DEVPROPKEY()
-PKEY_NAME.fmtid = (ctypes.c_byte * 16)(*u_name.bytes_le)
-PKEY_NAME.pid = 10
-
-def get_connected_hfp_device_aliases() -> set:
+def get_live_connected_bluetooth() -> set:
     """
-    Directly queries Windows PnP hardware Configuration Manager (cfgmgr32).
-    Returns a set of lowercase aliases/names of Bluetooth Hands-Free devices
-    that are TRULY connected over the air right now.
+    Checks whether Windows Bluetooth radio is ON and queries
+    which paired Bluetooth devices are actively connected right now.
+    Cached for 1.5s to minimize CPU overhead.
     """
+    global _bt_cache
+    now = time.time()
+    if now - _bt_cache["timestamp"] < 1.5:
+        return _bt_cache["connected_names"]
+
+    connected_names = set()
     try:
-        buf_len = wintypes.ULONG()
-        ret = cfgmgr32.CM_Get_Device_ID_List_SizeW(ctypes.byref(buf_len), 'BTHHFENUM', 0)
-        if ret != 0 or buf_len.value <= 1:
-            return set()
-        buf = ctypes.create_unicode_buffer(buf_len.value)
-        if cfgmgr32.CM_Get_Device_ID_ListW('BTHHFENUM', buf, buf_len.value, 0) != 0:
-            return set()
-        device_ids = [s for s in buf[:].split('\0') if s and 'BTHHFPAudio' in s]
-        connected_aliases = set()
-        for dev_id in device_ids:
-            devnode = wintypes.DWORD()
-            if cfgmgr32.CM_Locate_DevNodeW(ctypes.byref(devnode), dev_id, 0) == 0:
-                prop_type = wintypes.ULONG()
-                conn_buf = (ctypes.c_byte * 1)()
-                conn_size = wintypes.ULONG(1)
-                if cfgmgr32.CM_Get_DevNode_PropertyW(
-                    devnode, ctypes.byref(PKEY_IS_CONNECTED), ctypes.byref(prop_type),
-                    ctypes.byref(conn_buf), ctypes.byref(conn_size), 0
-                ) == 0:
-                    if bool(conn_buf[0]):
-                        name_buf = ctypes.create_unicode_buffer(256)
-                        name_size = wintypes.ULONG(512)
-                        if cfgmgr32.CM_Get_DevNode_PropertyW(
-                            devnode, ctypes.byref(PKEY_NAME), ctypes.byref(prop_type),
-                            ctypes.byref(name_buf), ctypes.byref(name_size), 0
-                        ) == 0:
-                            connected_aliases.add(name_buf.value.lower().strip())
-                        connected_aliases.add(dev_id.lower().strip())
-        return connected_aliases
+        import winrt.windows.devices.bluetooth as bt
+        import winrt.windows.devices.radios as radios
+        import winrt.windows.devices.enumeration as enum
+        import concurrent.futures
+
+        async def _query():
+            try:
+                adapter = await bt.BluetoothAdapter.get_default_async()
+                if not adapter:
+                    return set()
+                radio = await adapter.get_radio_async()
+                if not radio or radio.state != radios.RadioState.ON:
+                    return set()
+            except Exception:
+                pass
+
+            names = set()
+            try:
+                dev_infos = await enum.DeviceInformation.find_all_async()
+                checked_macs = set()
+                for info in dev_infos:
+                    if 'BTH' in info.id:
+                        mac_matches = re.findall(r'(?:Dev_|\b)([0-9a-fA-F]{12})(?:[#_]|\b)', info.id)
+                        for mac in mac_matches:
+                            mac_int = int(mac, 16)
+                            if mac_int not in checked_macs:
+                                checked_macs.add(mac_int)
+                                try:
+                                    dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac_int)
+                                    if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
+                                        names.add(dev.name.lower().strip())
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+            return names
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            connected_names = ex.submit(asyncio.run, _query()).result(timeout=3.5)
     except Exception:
-        return set()
+        pass
+
+    _bt_cache["timestamp"] = now
+    _bt_cache["connected_names"] = connected_names
+    return connected_names
 
 def check_hfp_hardware():
     try:
-        connected_aliases = get_connected_hfp_device_aliases()
-        # If Windows kernel reports no Bluetooth HFP hardware is actively connected:
-        if not connected_aliases:
+        live_bt = get_live_connected_bluetooth()
+        # If Bluetooth radio is OFF or no phone/headset is connected:
+        if not live_bt:
             return False, None, None
 
         devices = sd.query_devices()
         in_name = None
         out_name = None
 
-        def extract_alias(cleaned_name):
-            m = re.search(r'\(([^)]+)\)', cleaned_name)
+        def extract_alias(name_str):
+            m = re.search(r';\(([^)]+)\)\s*\)?$', name_str)
+            if not m:
+                m = re.search(r'\(([^)]+)\)', name_str)
             return m.group(1).lower().strip() if m else ""
 
         # 1. First priority: Hands-Free HF Audio (Phone Link cellular bridge)
         for d in devices:
             name = d.get("name", "")
             if "hands-free hf audio" in name.lower():
-                cleaned = clean_device_name(name)
-                alias = extract_alias(cleaned)
-                # Ensure device alias matches one of the truly connected hardware aliases
-                if not any(alias in ca or ca in alias for ca in connected_aliases):
+                alias = extract_alias(name)
+                # Must match an actively connected Bluetooth device!
+                if alias and not any(bt_name in alias or alias in bt_name for bt_name in live_bt):
                     continue
                 if d.get("max_input_channels", 0) > 0 and in_name is None:
-                    in_name = cleaned
+                    in_name = clean_device_name(name)
                 if d.get("max_output_channels", 0) > 0 and out_name is None:
-                    out_name = cleaned
+                    out_name = clean_device_name(name)
 
-        # 2. Second priority: any other hands-free headset that is actively connected
+        # 2. Second priority: any other hands-free headset that is connected
         if not (in_name and out_name):
             for d in devices:
                 name = d.get("name", "")
                 if "hands-free" in name.lower():
-                    cleaned = clean_device_name(name)
-                    alias = extract_alias(cleaned)
-                    if not any(alias in ca or ca in alias for ca in connected_aliases):
+                    alias = extract_alias(name)
+                    if alias and not any(bt_name in alias or alias in bt_name for bt_name in live_bt):
                         continue
                     if d.get("max_input_channels", 0) > 0 and in_name is None:
-                        in_name = cleaned
+                        in_name = clean_device_name(name)
                     if d.get("max_output_channels", 0) > 0 and out_name is None:
-                        out_name = cleaned
+                        out_name = clean_device_name(name)
 
         connected = (in_name is not None and out_name is not None)
         return connected, in_name, out_name
