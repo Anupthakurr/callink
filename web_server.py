@@ -101,13 +101,14 @@ def get_live_connected_bluetooth() -> set:
             return names
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            connected_names = ex.submit(asyncio.run, _query()).result(timeout=3.5)
-    except Exception:
-        pass
-
-    _bt_cache["timestamp"] = now
-    _bt_cache["connected_names"] = connected_names
-    return connected_names
+            connected_names = ex.submit(asyncio.run, _query()).result(timeout=4.0)
+        _bt_cache["timestamp"] = now
+        _bt_cache["connected_names"] = connected_names
+    except Exception as e:
+        if now - _bt_cache["timestamp"] > 5.0:
+            _bt_cache["timestamp"] = now
+            _bt_cache["connected_names"] = set()
+    return _bt_cache["connected_names"]
 
 def check_hfp_hardware():
     try:

@@ -21,7 +21,15 @@ import traceback
 import webbrowser
 
 # MUST import winrt before sounddevice to ensure COM is initialized in MTA mode
-from winrt.windows.applicationmodel.calls import PhoneCallManager
+try:
+    import winrt
+    from winrt.windows.applicationmodel.calls import PhoneCallManager
+    import winrt.windows.devices.bluetooth as bt
+    import winrt.windows.devices.radios as radios
+    import winrt.windows.devices.enumeration as enum
+except Exception:
+    pass
+
 import sounddevice as sd
 
 # Load .env if present
