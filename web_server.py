@@ -37,51 +37,76 @@ def clean_device_name(name: str) -> str:
         return f"{base} ({alias})"
     return base
 
-_bt_cache = {"timestamp": 0.0, "connected_aliases": set()}
+import ctypes
+import uuid
+from ctypes import wintypes
 
-def get_connected_bluetooth_aliases() -> set:
-    """Queries real-time Windows Bluetooth connection status via WinRT."""
-    global _bt_cache
-    now = time.time()
-    if now - _bt_cache["timestamp"] < 2.0:
-        return _bt_cache["connected_aliases"]
+cfgmgr32 = ctypes.windll.cfgmgr32
 
-    connected_aliases = set()
+class DEVPROPKEY(ctypes.Structure):
+    _fields_ = [
+        ('fmtid', ctypes.c_byte * 16),
+        ('pid', wintypes.ULONG)
+    ]
+
+# DEVPKEY_Device_IsConnected: {83DA6326-97A6-4088-9453-A1923F573B29}, 15
+u_conn = uuid.UUID('{83DA6326-97A6-4088-9453-A1923F573B29}')
+PKEY_IS_CONNECTED = DEVPROPKEY()
+PKEY_IS_CONNECTED.fmtid = (ctypes.c_byte * 16)(*u_conn.bytes_le)
+PKEY_IS_CONNECTED.pid = 15
+
+# DEVPKEY_NAME: {b725f130-4704-43b4-a0be-2e0c4598340c}, 10
+u_name = uuid.UUID('{b725f130-4704-43b4-a0be-2e0c4598340c}')
+PKEY_NAME = DEVPROPKEY()
+PKEY_NAME.fmtid = (ctypes.c_byte * 16)(*u_name.bytes_le)
+PKEY_NAME.pid = 10
+
+def get_connected_hfp_device_aliases() -> set:
+    """
+    Directly queries Windows PnP hardware Configuration Manager (cfgmgr32).
+    Returns a set of lowercase aliases/names of Bluetooth Hands-Free devices
+    that are TRULY connected over the air right now.
+    """
     try:
-        import winrt.windows.devices.bluetooth as bt
-        import winrt.windows.devices.enumeration as enum
-        import concurrent.futures
-
-        async def _query():
-            dev_infos = await enum.DeviceInformation.find_all_async()
-            seen = set()
-            found = set()
-            for info in dev_infos:
-                if 'BTHENUM#Dev_' in info.id:
-                    mac_part = info.id.split('Dev_')[1].split('#')[0].replace('_', '')
-                    if mac_part not in seen:
-                        seen.add(mac_part)
-                        try:
-                            mac_int = int(mac_part, 16)
-                            dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac_int)
-                            if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
-                                found.add(dev.name.lower().strip())
-                        except Exception:
-                            pass
-            return found
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            connected_aliases = ex.submit(asyncio.run, _query()).result(timeout=2.0)
+        buf_len = wintypes.ULONG()
+        ret = cfgmgr32.CM_Get_Device_ID_List_SizeW(ctypes.byref(buf_len), 'BTHHFENUM', 0)
+        if ret != 0 or buf_len.value <= 1:
+            return set()
+        buf = ctypes.create_unicode_buffer(buf_len.value)
+        if cfgmgr32.CM_Get_Device_ID_ListW('BTHHFENUM', buf, buf_len.value, 0) != 0:
+            return set()
+        device_ids = [s for s in buf[:].split('\0') if s and 'BTHHFPAudio' in s]
+        connected_aliases = set()
+        for dev_id in device_ids:
+            devnode = wintypes.DWORD()
+            if cfgmgr32.CM_Locate_DevNodeW(ctypes.byref(devnode), dev_id, 0) == 0:
+                prop_type = wintypes.ULONG()
+                conn_buf = (ctypes.c_byte * 1)()
+                conn_size = wintypes.ULONG(1)
+                if cfgmgr32.CM_Get_DevNode_PropertyW(
+                    devnode, ctypes.byref(PKEY_IS_CONNECTED), ctypes.byref(prop_type),
+                    ctypes.byref(conn_buf), ctypes.byref(conn_size), 0
+                ) == 0:
+                    if bool(conn_buf[0]):
+                        name_buf = ctypes.create_unicode_buffer(256)
+                        name_size = wintypes.ULONG(512)
+                        if cfgmgr32.CM_Get_DevNode_PropertyW(
+                            devnode, ctypes.byref(PKEY_NAME), ctypes.byref(prop_type),
+                            ctypes.byref(name_buf), ctypes.byref(name_size), 0
+                        ) == 0:
+                            connected_aliases.add(name_buf.value.lower().strip())
+                        connected_aliases.add(dev_id.lower().strip())
+        return connected_aliases
     except Exception:
-        pass
-
-    _bt_cache["timestamp"] = now
-    _bt_cache["connected_aliases"] = connected_aliases
-    return connected_aliases
+        return set()
 
 def check_hfp_hardware():
     try:
-        connected_bts = get_connected_bluetooth_aliases()
+        connected_aliases = get_connected_hfp_device_aliases()
+        # If Windows kernel reports no Bluetooth HFP hardware is actively connected:
+        if not connected_aliases:
+            return False, None, None
+
         devices = sd.query_devices()
         in_name = None
         out_name = None
@@ -96,7 +121,8 @@ def check_hfp_hardware():
             if "hands-free hf audio" in name.lower():
                 cleaned = clean_device_name(name)
                 alias = extract_alias(cleaned)
-                if connected_bts and alias and alias not in connected_bts:
+                # Ensure device alias matches one of the truly connected hardware aliases
+                if not any(alias in ca or ca in alias for ca in connected_aliases):
                     continue
                 if d.get("max_input_channels", 0) > 0 and in_name is None:
                     in_name = cleaned
@@ -110,7 +136,7 @@ def check_hfp_hardware():
                 if "hands-free" in name.lower():
                     cleaned = clean_device_name(name)
                     alias = extract_alias(cleaned)
-                    if connected_bts and alias and alias not in connected_bts:
+                    if not any(alias in ca or ca in alias for ca in connected_aliases):
                         continue
                     if d.get("max_input_channels", 0) > 0 and in_name is None:
                         in_name = cleaned
