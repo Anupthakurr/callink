@@ -199,11 +199,18 @@ function updateGatewayState(state) {
   }
 
   // Device Pill (Top Nav)
+  const devicePill = document.getElementById('devicePill');
   if (state.hfp_connected) {
     const alias = state.hfp_alias || '';
     deviceText.textContent = `Bluetooth HFP: Connected${alias ? ' (' + alias + ')' : ''}`;
+    if (devicePill) {
+      devicePill.className = 'device-pill device-connected';
+    }
   } else {
     deviceText.textContent = 'Bluetooth HFP: Disconnected';
+    if (devicePill) {
+      devicePill.className = 'device-pill device-disconnected';
+    }
   }
 
   // Dynamic Specs & Format Tags

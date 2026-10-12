@@ -37,28 +37,86 @@ def clean_device_name(name: str) -> str:
         return f"{base} ({alias})"
     return base
 
+_bt_cache = {"timestamp": 0.0, "connected_aliases": set()}
+
+def get_connected_bluetooth_aliases() -> set:
+    """Queries real-time Windows Bluetooth connection status via WinRT."""
+    global _bt_cache
+    now = time.time()
+    if now - _bt_cache["timestamp"] < 2.0:
+        return _bt_cache["connected_aliases"]
+
+    connected_aliases = set()
+    try:
+        import winrt.windows.devices.bluetooth as bt
+        import winrt.windows.devices.enumeration as enum
+        import concurrent.futures
+
+        async def _query():
+            dev_infos = await enum.DeviceInformation.find_all_async()
+            seen = set()
+            found = set()
+            for info in dev_infos:
+                if 'BTHENUM#Dev_' in info.id:
+                    mac_part = info.id.split('Dev_')[1].split('#')[0].replace('_', '')
+                    if mac_part not in seen:
+                        seen.add(mac_part)
+                        try:
+                            mac_int = int(mac_part, 16)
+                            dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac_int)
+                            if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
+                                found.add(dev.name.lower().strip())
+                        except Exception:
+                            pass
+            return found
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            connected_aliases = ex.submit(asyncio.run, _query()).result(timeout=2.0)
+    except Exception:
+        pass
+
+    _bt_cache["timestamp"] = now
+    _bt_cache["connected_aliases"] = connected_aliases
+    return connected_aliases
+
 def check_hfp_hardware():
     try:
+        connected_bts = get_connected_bluetooth_aliases()
         devices = sd.query_devices()
         in_name = None
         out_name = None
+
+        def extract_alias(cleaned_name):
+            m = re.search(r'\(([^)]+)\)', cleaned_name)
+            return m.group(1).lower().strip() if m else ""
+
         # 1. First priority: Hands-Free HF Audio (Phone Link cellular bridge)
         for d in devices:
             name = d.get("name", "")
             if "hands-free hf audio" in name.lower():
+                cleaned = clean_device_name(name)
+                alias = extract_alias(cleaned)
+                if connected_bts and alias and alias not in connected_bts:
+                    continue
                 if d.get("max_input_channels", 0) > 0 and in_name is None:
-                    in_name = clean_device_name(name)
+                    in_name = cleaned
                 if d.get("max_output_channels", 0) > 0 and out_name is None:
-                    out_name = clean_device_name(name)
-        # 2. Second priority: any other hands-free headset
+                    out_name = cleaned
+
+        # 2. Second priority: any other hands-free headset that is actively connected
         if not (in_name and out_name):
             for d in devices:
                 name = d.get("name", "")
                 if "hands-free" in name.lower():
+                    cleaned = clean_device_name(name)
+                    alias = extract_alias(cleaned)
+                    if connected_bts and alias and alias not in connected_bts:
+                        continue
                     if d.get("max_input_channels", 0) > 0 and in_name is None:
-                        in_name = clean_device_name(name)
+                        in_name = cleaned
                     if d.get("max_output_channels", 0) > 0 and out_name is None:
-                        out_name = clean_device_name(name)
+                        out_name = cleaned
+
         connected = (in_name is not None and out_name is not None)
         return connected, in_name, out_name
     except Exception:
