@@ -82,26 +82,25 @@ def get_live_connected_bluetooth() -> set:
             names = set()
             try:
                 dev_infos = await enum.DeviceInformation.find_all_async()
-                checked_macs = set()
+                macs = set()
                 for info in dev_infos:
-                    if 'BTH' in info.id:
-                        mac_matches = re.findall(r'(?:Dev_|\b)([0-9a-fA-F]{12})(?:[#_]|\b)', info.id)
-                        for mac in mac_matches:
-                            mac_int = int(mac, 16)
-                            if mac_int not in checked_macs:
-                                checked_macs.add(mac_int)
-                                try:
-                                    dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac_int)
-                                    if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
-                                        names.add(dev.name.lower().strip())
-                                except Exception:
-                                    pass
+                    if 'Dev_' in info.id or 'DEV_' in info.id:
+                        m = re.search(r'Dev_([0-9a-fA-F]{12})', info.id, re.IGNORECASE)
+                        if m:
+                            macs.add(int(m.group(1), 16))
+                for mac in macs:
+                    try:
+                        dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac)
+                        if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
+                            names.add(dev.name.lower().strip())
+                    except Exception:
+                        pass
             except Exception:
                 pass
             return names
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            connected_names = ex.submit(asyncio.run, _query()).result(timeout=4.0)
+            connected_names = ex.submit(asyncio.run, _query()).result(timeout=3.0)
         _bt_cache["timestamp"] = now
         _bt_cache["connected_names"] = connected_names
     except Exception as e:
