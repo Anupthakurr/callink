@@ -434,8 +434,22 @@ class HFPBridge:
         except Exception:
             return False
 
-    def start(self, max_retries: int = 10, retry_delay: float = 0.35):
+    def start(self, max_retries: int = 10, retry_delay: float = 0.35, is_outbound: bool = False) -> bool:
+        if is_outbound:
+            # Outbound cellular calls take time to ring on the mobile network until recipient answers!
+            max_retries = 60
+            retry_delay = 0.75
+
         for attempt in range(1, max_retries + 1):
+            # Check if cellular call was hung up, cancelled, or declined while waiting for pickup
+            try:
+                from winrt.windows.applicationmodel.calls import PhoneCallManager
+                if not PhoneCallManager.get_is_call_active():
+                    print("[Audio Link] Cellular call ended or declined before pickup.")
+                    return False
+            except Exception:
+                pass
+
             if self.input_device is None or self.output_device is None:
                 in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=(attempt > 1))
                 if in_dev is None or out_dev is None:
@@ -450,49 +464,48 @@ class HFPBridge:
                 self.output_device = out_dev
 
             try:
-                print(f"Opening HFP input [{self.input_device}]...")
-                self.input_stream = sd.InputStream(
-                    device=self.input_device,
-                    samplerate=HFP_RATE,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=HFP_BLOCK,
-                    callback=self.input_callback,
-                )
-                print("HFP input opened.")
+                # 1. Open Output Stream (Speaker playback to phone)
+                if not self.output_stream:
+                    self.output_stream = sd.OutputStream(
+                        device=self.output_device,
+                        samplerate=HFP_RATE,
+                        channels=1,
+                        dtype="int16",
+                        blocksize=HFP_BLOCK,
+                        callback=self.output_callback,
+                    )
+                    self.output_stream.start()
 
-                print(f"Opening HFP output [{self.output_device}]...")
-                self.output_stream = sd.OutputStream(
-                    device=self.output_device,
-                    samplerate=HFP_RATE,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=HFP_BLOCK,
-                    callback=self.output_callback,
-                )
-                print("HFP output opened.")
-
-                self.input_stream.start()
-                print("HFP input stream started.")
-
-                self.output_stream.start()
-                print("HFP output stream started.")
+                # 2. Open Input Stream (Mic audio from phone)
+                # Gated by Windows Bluetooth SCO driver; opens successfully once call audio channel is live
+                if not self.input_stream:
+                    self.input_stream = sd.InputStream(
+                        device=self.input_device,
+                        samplerate=HFP_RATE,
+                        channels=1,
+                        dtype="int16",
+                        blocksize=HFP_BLOCK,
+                        callback=self.input_callback,
+                    )
+                    self.input_stream.start()
 
                 print("HFP audio bridge running.\n")
-                return
+                return True
             except Exception as e:
                 self.stop()
                 if attempt < max_retries:
-                    print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
+                    if is_outbound:
+                        if attempt % 2 == 0 or attempt <= 2:
+                            elapsed = int(attempt * retry_delay)
+                            print(f"[Audio Link] ⏳ Outbound call ringing... Waiting for recipient to answer ({elapsed}s elapsed)...")
+                    else:
+                        print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
                     time.sleep(retry_delay)
-                    # Re-verify device indices in case Windows adjusted endpoints upon SCO connect
-                    in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=True)
-                    if in_dev is not None and out_dev is not None:
-                        self.input_device = in_dev
-                        self.output_device = out_dev
                 else:
                     print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
                     raise
+
+        return False
 
     def stop(self):
         if self.input_stream:
@@ -1227,12 +1240,15 @@ async def main_async():
             bridge = HFPBridge(in_dev=cached_in_dev, out_dev=cached_out_dev)
 
         try:
-            bridge.start()
-            stop_event = asyncio.Event()
-            await asyncio.gather(
-                run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer, outbound_info=outbound_info),
-                watch_call_and_hfp(bridge, stop_event),
-            )
+            started = bridge.start(is_outbound=bool(outbound_info))
+            if not started:
+                print("[Telephony] Cellular call was not answered or was cancelled. Returning to standby.")
+            else:
+                stop_event = asyncio.Event()
+                await asyncio.gather(
+                    run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer, outbound_info=outbound_info),
+                    watch_call_and_hfp(bridge, stop_event),
+                )
         except Exception as e:
             print(f"\n[Gateway Session Error]: {type(e).__name__}: {e}")
             traceback.print_exc(file=sys.stdout)
