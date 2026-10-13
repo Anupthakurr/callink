@@ -33,8 +33,8 @@ def clean_phone_number(raw_number: str) -> str:
 
 def trigger_system_dialer(clean_number: str) -> bool:
     """
-    Triggers Windows default telephony handler (Windows Phone Link / Link to Windows)
-    or attempts ADB if available.
+    Triggers Microsoft Phone Link specifically (bypassing PC VoIP software like MicroSIP,
+    Skype, or Zoom that hijack the tel: protocol) or attempts ADB if available.
     """
     if not clean_number:
         return False
@@ -45,7 +45,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
             ["adb", "devices"],
             capture_output=True,
             text=True,
-            timeout=1.5
+            timeout=1.0
         )
         if adb_check.returncode == 0 and "device\n" in adb_check.stdout:
             # Android device connected via ADB! Execute zero-click cellular dial
@@ -59,15 +59,55 @@ def trigger_system_dialer(clean_number: str) -> bool:
     except Exception:
         pass
 
-    # 2. Native Windows Telephony Protocol (tel: URI)
-    # Works natively with Windows Phone Link / Link to Windows on Windows 10 & 11
+    # 2. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
+    # Pinning target_application_package_family_name tells Windows to route the call
+    # exclusively to Microsoft Phone Link, completely bypassing MicroSIP, Skype, or Zoom.
+    try:
+        import winrt.windows.system as sys_winrt
+        import winrt.windows.foundation as fnd_winrt
+        import asyncio
+        import concurrent.futures
+
+        def _launch_targeted():
+            async def _coro():
+                options = sys_winrt.LauncherOptions()
+                options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
+                uri = fnd_winrt.Uri(f"tel:{clean_number}")
+                ok = await sys_winrt.Launcher.launch_uri_async(uri, options)
+                return ok
+
+            return asyncio.run(_coro())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            phone_link_ok = pool.submit(_launch_targeted).result(timeout=3.0)
+
+        if phone_link_ok:
+            print(f"[Outbound Dialer] Directly dialed {clean_number} via Microsoft Phone Link (bypassed MicroSIP).")
+            # Activate Phone Link app window to bring it to foreground
+            try:
+                subprocess.Popen(["explorer.exe", r"shell:AppsFolder\Microsoft.YourPhone_8wekyb3d8bbwe!App"])
+            except Exception:
+                pass
+            return True
+    except Exception as e:
+        print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
+
+    # 3. Dedicated Phone Link URI protocol (ms-phone: protocol unique to Phone Link)
+    try:
+        os.startfile(f"ms-phone:{clean_number}")
+        print(f"[Outbound Dialer] Dispatched via ms-phone URI for {clean_number}.")
+        return True
+    except Exception:
+        pass
+
+    # 4. Fallback to generic system telephony protocol
     try:
         tel_url = f"tel:{clean_number}"
         try:
             os.startfile(tel_url)
         except Exception:
             webbrowser.open(tel_url)
-        print(f"[Outbound Dialer] Triggered Windows Telephony dialer for {clean_number}.")
+        print(f"[Outbound Dialer] Triggered system telephony handler for {clean_number}.")
         return True
     except Exception as e:
         print(f"[Outbound Dialer Error] Failed to open telephony handler: {e}")
