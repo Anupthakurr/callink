@@ -719,16 +719,87 @@ def start_outbound_dial(
 def hangup_current_call() -> bool:
     """
     Terminates / cancels any active or dialing cellular call across Windows Phone Link
-    and connected telephony subsystems.
+    and connected telephony subsystems by sending the official HFP hangup command.
     """
     import ctypes
     from ctypes import wintypes
+    import psutil
+
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
 
+    # Save original foreground window so we can restore user focus immediately
+    orig_fg = None
+    try:
+        orig_fg = user32.GetForegroundWindow()
+    except Exception:
+        pass
+
+    # 1. Attach thread to interactive desktop session (WinSta0\Default)
+    hdesk = None
+    try:
+        hwinsta = user32.OpenWindowStationW("WinSta0", False, 0x10000000)
+        if hwinsta:
+            user32.SetProcessWindowStation(hwinsta)
+        hdesk = user32.OpenDesktopW("Default", 0, False, 0x10000000)
+        if hdesk:
+            user32.SetThreadDesktop(hdesk)
+    except Exception:
+        pass
+
     hung_up = False
 
-    # 1. UI Automation: Search for End Call button in candidate windows (Phone Link, active call toast)
+    # 2. Collect all candidate window handles (Phone Experience Host, toasts, call dialogs)
+    pids = []
+    try:
+        pids = [
+            p.info['pid'] for p in psutil.process_iter(['name', 'pid'])
+            if any(k in (p.info['name'] or '').lower() for k in ['phoneexperiencehost', 'shellexperiencehost', 'crossdevice'])
+        ]
+    except Exception:
+        pass
+
+    candidate_hwnds = []
+    def _enum_candidates(h, lp):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value in pids:
+            if h not in candidate_hwnds:
+                candidate_hwnds.append(h)
+        else:
+            length = user32.GetWindowTextLengthW(h)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(h, buf, length + 1)
+                title = buf.value.lower()
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(h, cls_buf, 256)
+                cls = cls_buf.value.lower()
+
+                if (
+                    ("phone link" in title or "your phone" in title or "call" in title or "+" in title)
+                    and "edge" not in title and "chrome" not in title and "ide" not in title and "cursor" not in title
+                ) or ("winuidesktop" in cls and ("phone" in title or "call" in title or title == "")):
+                    if h not in candidate_hwnds:
+                        candidate_hwnds.append(h)
+        return True
+
+    cb = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(_enum_candidates)
+    if hdesk:
+        user32.EnumDesktopWindows(hdesk, cb, 0)
+    user32.EnumWindows(cb, 0)
+
+    # Also include the explicit Phone Link window if found
+    try:
+        pl_h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link") or user32.FindWindowW(None, "Phone Link")
+        if pl_h and pl_h not in candidate_hwnds:
+            candidate_hwnds.append(pl_h)
+    except Exception:
+        pass
+
+    print(f"[Outbound Dialer] Found {len(candidate_hwnds)} candidate windows to disconnect.")
+
+    # 3. UI Automation: Inspect each candidate window using ElementFromHandle for End Call buttons
     try:
         import comtypes
         import comtypes.client
@@ -738,88 +809,83 @@ def hangup_current_call() -> bool:
             UIA_InvokePatternId, IUIAutomationInvokePattern
         )
 
-        def _get_proc_name(h):
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-            if not pid.value:
-                return ""
-            hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-            if not hProc:
-                return ""
-            buf = ctypes.create_unicode_buffer(1024)
-            size = wintypes.DWORD(1024)
-            kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size))
-            kernel32.CloseHandle(hProc)
-            return os.path.basename(buf.value)
-
-        candidate_hwnds = []
-        for pl_win in ["WinUIDesktopWin32WindowClass", "ApplicationFrameWindow"]:
-            h = user32.FindWindowW(pl_win, "Phone Link")
-            if h and h not in candidate_hwnds:
-                candidate_hwnds.append(h)
-        h = user32.FindWindowW(None, "Phone Link")
-        if h and h not in candidate_hwnds:
-            candidate_hwnds.append(h)
-
-        def _enum_cb(h, lp):
-            if user32.IsWindow(h) and user32.IsWindowVisible(h):
-                pname = _get_proc_name(h).lower()
-                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe"]:
-                    if h not in candidate_hwnds:
-                        candidate_hwnds.append(h)
-            return True
-
-        cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
-        user32.EnumWindows(cb, 0)
-
         comtypes.CoInitialize()
         try:
             uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
             btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+
             for hwnd in candidate_hwnds:
                 try:
+                    was_iconic = user32.IsIconic(hwnd)
+                    if was_iconic:
+                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        time.sleep(0.04)
+
                     el = uia.ElementFromHandle(hwnd)
                     if not el:
+                        if was_iconic:
+                            user32.ShowWindow(hwnd, 6)
                         continue
+
                     btns = el.FindAll(TreeScope_Descendants, btn_cond)
-                    if not btns:
+                    if not btns or btns.Length == 0:
+                        if was_iconic:
+                            user32.ShowWindow(hwnd, 6)
                         continue
+
                     for i in range(btns.Length):
                         b = btns.GetElement(i)
                         name = (b.CurrentName or "").strip().lower()
                         aid = (b.CurrentAutomationId or "").strip()
 
                         is_end = False
-                        if aid in ["EndCallButton", "KeypadEndCallButton", "EndButton", "DeclineCall", "DismissButton"]:
+                        if aid in [
+                            "MiniEndButton", "KeypadEndCallButton", "EndCallButton",
+                            "EndButton", "ButtonEndCall", "DeclineCall",
+                            "CloseWindowButton", "DismissButton"
+                        ]:
                             is_end = True
-                        elif name in ["end call", "end", "hang up", "decline", "cancel call"]:
+                        elif name in ["end call", "end", "hang up", "decline", "cancel call", "disconnect"]:
+                            is_end = True
+                        elif "end call" in name or "hang up" in name or (name == "decline"):
                             is_end = True
 
                         if is_end:
-                            pattern = b.GetCurrentPattern(UIA_InvokePatternId)
-                            if pattern:
-                                invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
-                                invoker.Invoke()
-                                hung_up = True
-                                print(f"[Outbound Dialer] Disconnected call via UIAutomation button '{aid}' ('{name}').")
-                                break
-                            rect = b.CurrentBoundingRectangle
-                            bw = rect.right - rect.left
-                            bh = rect.bottom - rect.top
-                            if bw > 0 and bh > 0:
-                                cx = rect.left + bw // 2
-                                cy = rect.top + bh // 2
-                                orig_pt = wintypes.POINT()
-                                user32.GetCursorPos(ctypes.byref(orig_pt))
-                                user32.SetCursorPos(cx, cy)
-                                time.sleep(0.04)
-                                user32.mouse_event(0x0002, 0, 0, 0, 0)
-                                time.sleep(0.04)
-                                user32.mouse_event(0x0004, 0, 0, 0, 0)
-                                user32.SetCursorPos(orig_pt.x, orig_pt.y)
-                                hung_up = True
-                                print(f"[Outbound Dialer] Clicked disconnect button '{aid}' at ({cx}, {cy}).")
-                                break
+                            # 1. InvokePattern
+                            try:
+                                pattern = b.GetCurrentPattern(UIA_InvokePatternId)
+                                if pattern:
+                                    invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
+                                    invoker.Invoke()
+                                    hung_up = True
+                                    print(f"[Outbound Dialer] Invoked End Call button '{aid}' ('{name}') via UIAutomation on HWND {hwnd}.")
+                            except Exception as ex:
+                                print(f"[Outbound Dialer] Invoke pattern error: {ex}")
+
+                            # 2. Hardware mouse click fallback
+                            try:
+                                rect = b.CurrentBoundingRectangle
+                                bw = rect.right - rect.left
+                                bh = rect.bottom - rect.top
+                                if bw > 0 and bh > 0:
+                                    cx = rect.left + bw // 2
+                                    cy = rect.top + bh // 2
+                                    orig_pt = wintypes.POINT()
+                                    user32.GetCursorPos(ctypes.byref(orig_pt))
+                                    user32.SetCursorPos(cx, cy)
+                                    time.sleep(0.04)
+                                    user32.mouse_event(0x0002, 0, 0, 0, 0)
+                                    time.sleep(0.04)
+                                    user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                    user32.SetCursorPos(orig_pt.x, orig_pt.y)
+                                    hung_up = True
+                                    print(f"[Outbound Dialer] Hardware clicked End Call button '{aid}' at ({cx}, {cy}).")
+                            except Exception:
+                                pass
+                            break
+
+                    if was_iconic:
+                        user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
                 except Exception:
                     pass
         finally:
@@ -830,39 +896,64 @@ def hangup_current_call() -> bool:
     except Exception as ex:
         print(f"[Outbound Dialer] UIAutomation hangup note: {ex}")
 
-    # 2. Keyboard shortcut fallback: Post VK_END (0x23) and VK_ESCAPE (0x1B) to Phone Link
-    try:
-        pl_h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link") or user32.FindWindowW(None, "Phone Link")
-        if pl_h:
-            WM_KEYDOWN = 0x0100
-            WM_KEYUP = 0x0101
-            user32.PostMessageW(pl_h, WM_KEYDOWN, 0x23, 0)  # VK_END
-            time.sleep(0.03)
-            user32.PostMessageW(pl_h, WM_KEYUP, 0x23, 0)
-            user32.PostMessageW(pl_h, WM_KEYDOWN, 0x1B, 0)  # VK_ESCAPE
-            time.sleep(0.03)
-            user32.PostMessageW(pl_h, WM_KEYUP, 0x1B, 0)
-    except Exception:
-        pass
+    # 4. Trigger WM_CLOSE and SC_CLOSE on Phone Link call windows (triggers endCallsOnWindowClosed)
+    for hwnd in candidate_hwnds:
+        try:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids:
+                length = user32.GetWindowTextLengthW(hwnd)
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.lower()
 
-    # 3. Android ADB fallback (KEYCODE_ENDCALL = 6)
-    try:
-        subprocess.Popen(["adb", "shell", "input", "keyevent", "6"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+                # Post WM_CLOSE and SC_CLOSE
+                user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                user32.PostMessageW(hwnd, 0x0112, 0xF060, 0)  # WM_SYSCOMMAND, SC_CLOSE
+                print(f"[Outbound Dialer] Sent WM_CLOSE / SC_CLOSE to Phone Link window {hwnd} ('{buf.value}')")
+        except Exception:
+            pass
 
-    # 4. Fallback safeguard: If after 0.4s the call remains active on PhoneLink, terminate PhoneExperienceHost
-    time.sleep(0.4)
+    # 5. Bring Phone Link window to focus briefly to process Escape / Alt+F4
+    pl_h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link") or user32.FindWindowW(None, "Phone Link")
+    if pl_h:
+        try:
+            user32.ShowWindow(pl_h, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(pl_h)
+            time.sleep(0.02)
+            # Escape
+            user32.keybd_event(0x1B, 0, 0, 0)
+            time.sleep(0.02)
+            user32.keybd_event(0x1B, 0, 2, 0)
+            # Alt+F4
+            user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU (Alt) down
+            user32.keybd_event(0x73, 0, 0, 0)  # VK_F4 down
+            time.sleep(0.02)
+            user32.keybd_event(0x73, 0, 2, 0)  # VK_F4 up
+            user32.keybd_event(0x12, 0, 2, 0)  # VK_MENU up
+        except Exception:
+            pass
+        finally:
+            user32.ShowWindow(pl_h, 6)  # SW_MINIMIZE
+            if orig_fg and orig_fg != pl_h:
+                try:
+                    user32.SetForegroundWindow(orig_fg)
+                except Exception:
+                    pass
+
+    # 6. Check WinRT cellular call status
     try:
-        import winrt.windows.applicationmodel.calls as calls_winrt
-        if calls_winrt.PhoneCallManager.get_is_call_active():
-            print("[Outbound Dialer] Cellular call still active after soft disconnect; enforcing process disconnect...")
-            subprocess.run(["taskkill", "/f", "/im", "PhoneExperienceHost.exe"], capture_output=True, check=False)
+        from winrt.windows.applicationmodel.calls import PhoneCallManager
+        active = PhoneCallManager.get_is_call_active()
+        if not active:
+            print("[Outbound Dialer] Cellular call verified ceased in WinRT telephony.")
             hung_up = True
+        else:
+            print("[Outbound Dialer] WinRT reports cellular line still clearing...")
     except Exception:
         pass
 
-    keep_phone_link_minimized(duration=3.0)
+    keep_phone_link_minimized(duration=3.0, restore_hwnd=orig_fg)
     return hung_up
 
 
@@ -873,7 +964,15 @@ def cancel_outbound_dial() -> bool:
         had_outbound = _active_outbound is not None
         _active_outbound = None
     print("[Outbound Dialer] Outbound dialing cancelled by user — terminating cellular call...")
-    hangup_current_call()
+    hung_up = hangup_current_call()
+    try:
+        from winrt.windows.applicationmodel.calls import PhoneCallManager
+        time.sleep(0.25)
+        if PhoneCallManager.get_is_call_active():
+            print("[Outbound Dialer] Cellular call still active after initial disconnect; re-invoking hangup...")
+            hangup_current_call()
+    except Exception:
+        pass
     return True
 
 
