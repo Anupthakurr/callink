@@ -110,7 +110,10 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
         def _enum_cb(h, lp):
             if user32.IsWindowVisible(h):
                 pname = _get_proc_name(h).lower()
-                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe", "explorer.exe"]:
+                # Exclude browsers and code editors to avoid false positive text matches
+                if pname in ["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "code.exe", "antigravity ide.exe"]:
+                    return True
+                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe"]:
                     if h not in candidate_hwnds:
                         candidate_hwnds.append(h)
                 else:
@@ -119,7 +122,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                         buf = ctypes.create_unicode_buffer(length + 1)
                         user32.GetWindowTextW(h, buf, length + 1)
                         title = buf.value.lower()
-                        if "phone link" in title or "your phone" in title or "call" in title:
+                        if ("phone link" in title or "your phone" in title or title == "calls") and "edge" not in title and "chrome" not in title:
                             if h not in candidate_hwnds:
                                 candidate_hwnds.append(h)
             return True
@@ -160,6 +163,14 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                 def _click_transfer_btn(b):
                     name = (b.CurrentName or "").strip()
                     aid = (b.CurrentAutomationId or "").strip()
+                    # Validate: exact name match or known button AutomationId
+                    if (
+                        name.lower() != "transfer to pc"
+                        and aid not in ["VerbButton", "TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
+                        and aid.lower() != "transfertopc"
+                    ):
+                        return False
+
                     print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Routing audio to PC...")
                     # 1. InvokePattern
                     try:
@@ -171,12 +182,13 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                     except Exception as ex:
                         print(f"[Audio Router] InvokePattern notice: {ex}")
 
-                    # 2. Hardware click fallback
+                    # 2. Hardware mouse click fallback
                     try:
                         rect = b.CurrentBoundingRectangle
                         bw = rect.right - rect.left
                         bh = rect.bottom - rect.top
-                        if bw > 0 and bh > 0:
+                        # Verify coordinate is physically on-screen
+                        if bw > 0 and bh > 0 and rect.left >= 0 and rect.top >= 0:
                             cx = rect.left + bw // 2
                             cy = rect.top + bh // 2
                             orig_pt = wintypes.POINT()
@@ -196,20 +208,20 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                     return True
 
                 # Check root targets directly
-                for target_id in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]:
+                for target_id in ["VerbButton", "TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]:
                     try:
                         c_target = uia.CreatePropertyCondition(UIA_AutomationIdPropertyId, target_id)
                         b_target = root.FindFirst(TreeScope_Descendants, c_target)
-                        if b_target:
-                            return _click_transfer_btn(b_target)
+                        if b_target and _click_transfer_btn(b_target):
+                            return True
                     except Exception:
                         pass
 
                 try:
                     c_name_transfer = uia.CreatePropertyCondition(UIA_NamePropertyId, "Transfer to PC")
                     b_name_transfer = root.FindFirst(TreeScope_Descendants, c_name_transfer)
-                    if b_name_transfer:
-                        return _click_transfer_btn(b_name_transfer)
+                    if b_name_transfer and _click_transfer_btn(b_name_transfer):
+                        return True
                 except Exception:
                     pass
 
@@ -229,16 +241,17 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                             name = (b.CurrentName or "").strip().lower()
                             aid = (b.CurrentAutomationId or "").strip()
 
-                            if "transfer to phone" in name or "send call to mobile" in name:
+                            if name in ["transfer to phone", "send call to mobile"]:
                                 print("[Audio Router] Call audio is already routed to PC (button displays 'Transfer to phone').")
                                 return True
 
                             if (
-                                "transfer to pc" in name
-                                or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
-                                or "transfertopc" in aid.lower()
+                                name == "transfer to pc"
+                                or aid in ["VerbButton", "TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
+                                or aid.lower() == "transfertopc"
                             ):
-                                return _click_transfer_btn(b)
+                                if _click_transfer_btn(b):
+                                    return True
                     except Exception:
                         pass
             finally:
