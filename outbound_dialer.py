@@ -10,6 +10,8 @@ import time
 import threading
 import subprocess
 import webbrowser
+import ctypes
+from ctypes import wintypes
 from typing import Optional, Dict, Any
 
 _lock = threading.Lock()
