@@ -58,20 +58,18 @@ def format_e164_number(clean_number: str) -> str:
 def _auto_press_dial(phone_number: str):
     """
     Background automation helper that brings Phone Link to focus, finds the
-    on-screen 'Call' / 'Dial' button via Windows UI Automation, and invokes it directly.
-    Also provides keyboard navigation fallback (Down Arrow + Enter / Tab + Enter).
+    on-screen green 'Call' / 'Dial' button (ButtonCall) via Windows UI Automation,
+    and invokes it directly. Also checks if the call is active and exits once connected.
     """
-    time.sleep(0.8)
+    time.sleep(0.5)
     ps_cmd = """
     Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction SilentlyContinue
 
     $wshell = New-Object -ComObject WScript.Shell
-    $act = $wshell.AppActivate('Phone Link')
-    if (-not $act) { $act = $wshell.AppActivate('Your Phone') }
 
-    # UI Automation: search for the Call button in Phone Link and invoke it
-    function Invoke-CallButton {
+    # UI Automation: locate Phone Link and click the green Call button (ButtonCall)
+    function Click-PhoneLinkCallButton {
         try {
             $root = [System.Windows.Automation.AutomationElement]::RootElement
             $all = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
@@ -82,12 +80,24 @@ def _auto_press_dial(phone_number: str):
                     foreach ($b in $btns) {
                         $bn = $b.Current.Name
                         $bid = $b.Current.AutomationId
-                        if ($bn -eq 'Call' -or $bn -eq 'Dial' -or $bid -match '(?i)call|dial' -or $bn -match '(?i)^call\b') {
-                            $p = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                            if ($p) {
-                                $p.Invoke()
+                        # Direct match for Phone Link's green Call button (ButtonCall)
+                        if ($bid -eq 'ButtonCall' -or $bid -eq 'DialConfirmationDialButton' -or $bn -eq 'Call' -or $bn -eq 'Dial' -or $bid -match '(?i)call.*button|dial.*button') {
+                            # 1. Try InvokePattern
+                            try {
+                                $p = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                                if ($p) {
+                                    $p.Invoke()
+                                    return $true
+                                }
+                            } catch {}
+
+                            # 2. Try SetFocus + Space / Enter
+                            try {
+                                $b.SetFocus()
+                                $wshell.SendKeys(' ')
+                                $wshell.SendKeys('~')
                                 return $true
-                            }
+                            } catch {}
                         }
                     }
                 }
@@ -96,28 +106,29 @@ def _auto_press_dial(phone_number: str):
         return $false
     }
 
-    # Poll for the Call button for up to 3 seconds as the Calls view renders
-    for ($i = 0; $i -lt 5; $i++) {
-        Start-Sleep -Milliseconds 600
-        if (Invoke-CallButton) {
+    # Poll for up to 12 seconds (24 attempts x 500ms) while Phone Link renders the dial pad
+    for ($i = 0; $i -lt 24; $i++) {
+        # Activate window if possible
+        $wshell.AppActivate('Phone Link') | Out-Null
+        $wshell.AppActivate('Your Phone') | Out-Null
+
+        if (Click-PhoneLinkCallButton) {
             exit 0
         }
-    }
 
-    # Keyboard fallback: In Phone Link, Down Arrow selects 'Call <number>' suggestion, followed by Enter
-    if ($act) {
-        $wshell.SendKeys('{DOWN}')
-        Start-Sleep -Milliseconds 150
-        $wshell.SendKeys('{ENTER}')
-        Start-Sleep -Milliseconds 250
-        $wshell.SendKeys('~')
+        # After 2.5s, if keypad is focused, try Enter keypress as secondary trigger
+        if ($i -ge 5 -and ($i % 3 -eq 0)) {
+            $wshell.SendKeys('~')
+        }
+
+        Start-Sleep -Milliseconds 500
     }
     """
     try:
         subprocess.run(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
             capture_output=True,
-            timeout=8.0
+            timeout=15.0
         )
     except Exception:
         pass
