@@ -1277,7 +1277,7 @@ async def main_async():
                 # Wait for cellular call to fully cease in WinRT before resuming standby monitoring
                 for _ in range(40):
                     try:
-                        if not calls_winrt.PhoneCallManager.get_is_call_active():
+                        if not PhoneCallManager.get_is_call_active():
                             break
                     except Exception:
                         break
