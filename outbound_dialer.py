@@ -31,13 +31,74 @@ def clean_phone_number(raw_number: str) -> str:
     return ("+" + digits) if has_plus else digits
 
 
+def format_e164_number(clean_number: str) -> str:
+    """
+    Ensures the number has an international country code (E.164 format)
+    so Microsoft Phone Link can properly parse and dial it.
+    Defaults to Indian mobile (+91) if a 10-digit number is provided.
+    """
+    if not clean_number:
+        return ""
+    if clean_number.startswith("+"):
+        return clean_number
+
+    digits = re.sub(r"[^\d]", "", clean_number)
+    # 10 digits starting with 6-9 (standard Indian mobile number)
+    if len(digits) == 10 and digits[0] in "6789":
+        return f"+91{digits}"
+    # 11 digits starting with 0 followed by 6-9
+    if len(digits) == 11 and digits.startswith("0") and digits[1] in "6789":
+        return f"+91{digits[1:]}"
+    # 10-digit number fallback
+    if len(digits) == 10:
+        return f"+91{digits}"
+    return clean_number
+
+
+def _auto_press_dial(phone_number: str):
+    """
+    Background helper that brings Phone Link to focus, navigates to the Calls tab,
+    ensures the phone number is entered, and presses Enter to place the call automatically.
+    """
+    time.sleep(1.0)
+    digits = re.sub(r"[^\d+]", "", phone_number)
+    ps_cmd = f"""
+    $wshell = New-Object -ComObject WScript.Shell
+    $found = $wshell.AppActivate('Phone Link')
+    if (-not $found) {{
+        $found = $wshell.AppActivate('Your Phone')
+    }}
+    if ($found) {{
+        Start-Sleep -Milliseconds 400
+        # Ctrl+2 navigates to Calls tab in Phone Link
+        $wshell.SendKeys('^2')
+        Start-Sleep -Milliseconds 350
+        # Send digits to dialer input
+        $wshell.SendKeys('{digits}')
+        Start-Sleep -Milliseconds 250
+        # Enter initiates the cellular call
+        $wshell.SendKeys('{{ENTER}}')
+    }}
+    """
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            capture_output=True,
+            timeout=5.0
+        )
+    except Exception:
+        pass
+
+
 def trigger_system_dialer(clean_number: str) -> bool:
     """
     Triggers Microsoft Phone Link specifically (bypassing PC VoIP software like MicroSIP,
-    Skype, or Zoom that hijack the tel: protocol) or attempts ADB if available.
+    Skype, or Zoom that hijack the tel: protocol) and automatically enters the number.
     """
     if not clean_number:
         return False
+
+    e164_number = format_e164_number(clean_number)
 
     # 1. Attempt Android ADB direct dial if adb device is connected
     try:
@@ -52,14 +113,23 @@ def trigger_system_dialer(clean_number: str) -> bool:
             subprocess.Popen([
                 "adb", "shell", "am", "start",
                 "-a", "android.intent.action.CALL",
-                "-d", f"tel:{clean_number}"
+                "-d", f"tel:{e164_number}"
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"[Outbound Dialer] Placed automated cellular call to {clean_number} via Android ADB.")
+            print(f"[Outbound Dialer] Placed automated cellular call to {e164_number} via Android ADB.")
             return True
     except Exception:
         pass
 
-    # 2. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
+    # 2. Copy phone number to Windows Clipboard so user can also Ctrl+V instantly
+    try:
+        subprocess.run(["clip.exe"], input=clean_number.encode(), check=False)
+    except Exception:
+        pass
+
+    # 3. Launch auto-dial helper in background thread to navigate Calls tab & press Enter
+    threading.Thread(target=_auto_press_dial, args=(clean_number,), daemon=True).start()
+
+    # 4. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
     # Pinning target_application_package_family_name tells Windows to route the call
     # exclusively to Microsoft Phone Link, completely bypassing MicroSIP, Skype, or Zoom.
     try:
@@ -68,46 +138,41 @@ def trigger_system_dialer(clean_number: str) -> bool:
         import asyncio
         import concurrent.futures
 
-        def _launch_targeted():
+        def _launch_targeted(num: str):
             async def _coro():
                 options = sys_winrt.LauncherOptions()
                 options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
-                uri = fnd_winrt.Uri(f"tel:{clean_number}")
+                uri = fnd_winrt.Uri(f"tel:{num}")
                 ok = await sys_winrt.Launcher.launch_uri_async(uri, options)
                 return ok
 
             return asyncio.run(_coro())
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            phone_link_ok = pool.submit(_launch_targeted).result(timeout=3.0)
+            phone_link_ok = pool.submit(_launch_targeted, e164_number).result(timeout=3.0)
 
         if phone_link_ok:
-            print(f"[Outbound Dialer] Directly dialed {clean_number} via Microsoft Phone Link (bypassed MicroSIP).")
-            # Activate Phone Link app window to bring it to foreground
-            try:
-                subprocess.Popen(["explorer.exe", r"shell:AppsFolder\Microsoft.YourPhone_8wekyb3d8bbwe!App"])
-            except Exception:
-                pass
+            print(f"[Outbound Dialer] Dispatched {e164_number} directly to Microsoft Phone Link.")
             return True
     except Exception as e:
         print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
 
-    # 3. Dedicated Phone Link URI protocol (ms-phone: protocol unique to Phone Link)
+    # 5. Dedicated Phone Link URI protocol (ms-phone: protocol unique to Phone Link)
     try:
-        os.startfile(f"ms-phone:{clean_number}")
-        print(f"[Outbound Dialer] Dispatched via ms-phone URI for {clean_number}.")
+        os.startfile(f"ms-phone:{e164_number}")
+        print(f"[Outbound Dialer] Dispatched via ms-phone URI for {e164_number}.")
         return True
     except Exception:
         pass
 
-    # 4. Fallback to generic system telephony protocol
+    # 6. Fallback to generic system telephony protocol
     try:
-        tel_url = f"tel:{clean_number}"
+        tel_url = f"tel:{e164_number}"
         try:
             os.startfile(tel_url)
         except Exception:
             webbrowser.open(tel_url)
-        print(f"[Outbound Dialer] Triggered system telephony handler for {clean_number}.")
+        print(f"[Outbound Dialer] Triggered system telephony handler for {e164_number}.")
         return True
     except Exception as e:
         print(f"[Outbound Dialer Error] Failed to open telephony handler: {e}")
