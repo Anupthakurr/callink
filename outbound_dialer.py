@@ -57,6 +57,60 @@ def format_e164_number(clean_number: str) -> str:
     return clean_number
 
 
+def _safe_coinit() -> bool:
+    """Safely initializes COM apartment without throwing RPC_E_CHANGED_MODE on MTA threads."""
+    try:
+        import comtypes
+        comtypes.CoInitialize()
+        return True
+    except Exception:
+        return False
+
+
+def _safe_couninit(did_init: bool):
+    """Safely uninitializes COM apartment only if this scope initialized it."""
+    if did_init:
+        try:
+            import comtypes
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
+
+
+def find_phone_link_window():
+    """Locates any active top-level Microsoft Phone Link window handle."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    # Check WinUI 3 desktop class (Windows 11 Phone Link)
+    h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link")
+    if h:
+        return h
+    # Check title only
+    h = user32.FindWindowW(None, "Phone Link")
+    if h:
+        return h
+    # Check UWP class (Windows 10 Your Phone)
+    h = user32.FindWindowW("ApplicationFrameWindow", "Phone Link")
+    if h:
+        return h
+    # Fallback window title scan
+    found = [None]
+    def _enum_cb(hwnd, lparam):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            val = buf.value.lower()
+            if "phone link" in val or "your phone" in val:
+                found[0] = hwnd
+                return False
+        return True
+    cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
+    user32.EnumWindows(cb, 0)
+    return found[0]
+
+
 def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
     """
     Monitors Phone Link during an active or outgoing cellular call and automatically clicks
@@ -144,7 +198,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                 UIA_InvokePatternId, IUIAutomationInvokePattern
             )
 
-            comtypes.CoInitialize()
+            co_ok = _safe_coinit()
             try:
                 uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
                 root = uia.GetRootElement()
@@ -257,10 +311,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                     except Exception:
                         pass
             finally:
-                try:
-                    comtypes.CoUninitialize()
-                except Exception:
-                    pass
+                _safe_couninit(co_ok)
         except Exception:
             pass
 
@@ -384,34 +435,7 @@ def _auto_press_dial(phone_number: str):
         except Exception:
             return False
 
-    def _find_phone_link():
-        # Check WinUI 3 desktop class (Windows 11 Phone Link)
-        h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link")
-        if h:
-            return h
-        # Check title only
-        h = user32.FindWindowW(None, "Phone Link")
-        if h:
-            return h
-        # Check UWP class (Windows 10 Your Phone)
-        h = user32.FindWindowW("ApplicationFrameWindow", "Phone Link")
-        if h:
-            return h
-        # Fallback window title scan
-        found = [None]
-        def _enum_cb(hwnd, lparam):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buf, length + 1)
-                val = buf.value.lower()
-                if "phone link" in val or "your phone" in val:
-                    found[0] = hwnd
-                    return False
-            return True
-        cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
-        user32.EnumWindows(cb, 0)
-        return found[0]
+    _find_phone_link = find_phone_link_window
 
     # Initial brief pause for Phone Link UI to render the dial pad
     time.sleep(0.5)
@@ -440,7 +464,7 @@ def _auto_press_dial(phone_number: str):
                     UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
                     UIA_InvokePatternId, IUIAutomationInvokePattern
                 )
-                comtypes.CoInitialize()
+                co_ok = _safe_coinit()
                 try:
                     uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
                     el = uia.ElementFromHandle(hwnd)
@@ -463,10 +487,7 @@ def _auto_press_dial(phone_number: str):
                                         user32.ShowWindow(hwnd, 6) # SW_MINIMIZE
                                         break
                 finally:
-                    try:
-                        comtypes.CoUninitialize()
-                    except Exception:
-                        pass
+                    _safe_couninit(co_ok)
             except Exception:
                 pass
 
@@ -749,21 +770,33 @@ def hangup_current_call() -> bool:
 
     hung_up = False
 
-    # 2. Collect all candidate window handles (Phone Experience Host, toasts, call dialogs)
-    pids = []
+    # 2. Collect all candidate window handles (Phone Experience Host app & call windows)
+    phone_pids = []
     try:
-        pids = [
+        phone_pids = [
             p.info['pid'] for p in psutil.process_iter(['name', 'pid'])
-            if any(k in (p.info['name'] or '').lower() for k in ['phoneexperiencehost', 'shellexperiencehost', 'crossdevice'])
+            if 'phoneexperiencehost' in (p.info['name'] or '').lower()
         ]
     except Exception:
         pass
 
+    ignored_classes = [
+        "ime", "msctfime ui", "gdi+ hook window class",
+        ".net-broadcasteventwindow", "cicerouiwendframe", "cicerouiwndframe",
+        "pyinstalleronefilehiddenwindow"
+    ]
+
     candidate_hwnds = []
     def _enum_candidates(h, lp):
+        cls_buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(h, cls_buf, 256)
+        cls = cls_buf.value.lower()
+        if any(ic in cls for ic in ignored_classes):
+            return True
+
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-        if pid.value in pids:
+        if pid.value in phone_pids:
             if h not in candidate_hwnds:
                 candidate_hwnds.append(h)
         else:
@@ -772,9 +805,6 @@ def hangup_current_call() -> bool:
                 buf = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(h, buf, length + 1)
                 title = buf.value.lower()
-                cls_buf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(h, cls_buf, 256)
-                cls = cls_buf.value.lower()
 
                 if (
                     ("phone link" in title or "your phone" in title or "call" in title or "+" in title)
@@ -791,7 +821,7 @@ def hangup_current_call() -> bool:
 
     # Also include the explicit Phone Link window if found
     try:
-        pl_h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link") or user32.FindWindowW(None, "Phone Link")
+        pl_h = find_phone_link_window()
         if pl_h and pl_h not in candidate_hwnds:
             candidate_hwnds.append(pl_h)
     except Exception:
@@ -809,7 +839,7 @@ def hangup_current_call() -> bool:
             UIA_InvokePatternId, IUIAutomationInvokePattern
         )
 
-        comtypes.CoInitialize()
+        co_ok = _safe_coinit()
         try:
             uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
             btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
@@ -886,13 +916,12 @@ def hangup_current_call() -> bool:
 
                     if was_iconic:
                         user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+                    if hung_up:
+                        break
                 except Exception:
                     pass
         finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+            _safe_couninit(co_ok)
     except Exception as ex:
         print(f"[Outbound Dialer] UIAutomation hangup note: {ex}")
 
@@ -901,11 +930,16 @@ def hangup_current_call() -> bool:
         try:
             pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value in pids:
+            if pid.value in phone_pids:
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cls_buf, 256)
+                cls = cls_buf.value.lower()
+                if any(ic in cls for ic in ignored_classes):
+                    continue
+
                 length = user32.GetWindowTextLengthW(hwnd)
                 buf = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(hwnd, buf, length + 1)
-                title = buf.value.lower()
 
                 # Post WM_CLOSE and SC_CLOSE
                 user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
@@ -915,7 +949,7 @@ def hangup_current_call() -> bool:
             pass
 
     # 5. Bring Phone Link window to focus briefly to process Escape / Alt+F4
-    pl_h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link") or user32.FindWindowW(None, "Phone Link")
+    pl_h = find_phone_link_window()
     if pl_h:
         try:
             user32.ShowWindow(pl_h, 9)  # SW_RESTORE
