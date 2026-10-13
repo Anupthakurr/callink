@@ -55,12 +55,168 @@ def format_e164_number(clean_number: str) -> str:
     return clean_number
 
 
+def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
+    """
+    Monitors Phone Link during an active or outgoing cellular call and automatically clicks
+    'Transfer to PC' so call audio is routed to PC by default (switching the button to 'Transfer to phone').
+    If the button already shows 'Transfer to phone', it leaves it alone and reports success.
+    """
+    import ctypes
+    from ctypes import wintypes
+    import os
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    def _attach_desktop():
+        try:
+            hwinsta = user32.OpenWindowStationW("WinSta0", False, 0x10000000)
+            if hwinsta:
+                user32.SetProcessWindowStation(hwinsta)
+            hdesk = user32.OpenDesktopW("Default", 0, False, 0x10000000)
+            if hdesk:
+                user32.SetThreadDesktop(hdesk)
+            return hdesk
+        except Exception:
+            return None
+
+    def _get_proc_name(h):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        hProc = kernel32.OpenProcess(0x1000, False, pid.value)
+        if not hProc:
+            return ""
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size))
+        kernel32.CloseHandle(hProc)
+        return os.path.basename(buf.value)
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        hdesk = _attach_desktop()
+
+        # Find visible Phone Link windows
+        candidate_hwnds = []
+        def _enum_cb(h, lp):
+            if user32.IsWindowVisible(h):
+                pname = _get_proc_name(h).lower()
+                if pname in ["phoneexperiencehost.exe", "yourphone.exe"]:
+                    candidate_hwnds.append(h)
+                else:
+                    length = user32.GetWindowTextLengthW(h)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(h, buf, length + 1)
+                        title = buf.value.lower()
+                        if "phone link" in title or "your phone" in title:
+                            candidate_hwnds.append(h)
+            return True
+
+        if hdesk:
+            cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
+            user32.EnumDesktopWindows(hdesk, cb, 0)
+
+        # Inspect controls via UI Automation
+        if candidate_hwnds:
+            try:
+                import comtypes
+                import comtypes.client
+                from comtypes.gen.UIAutomationClient import (
+                    IUIAutomation, TreeScope_Descendants,
+                    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+                    UIA_InvokePatternId, IUIAutomationInvokePattern
+                )
+
+                comtypes.CoInitialize()
+                try:
+                    uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
+                    btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+
+                    for hwnd in candidate_hwnds:
+                        try:
+                            el = uia.ElementFromHandle(hwnd)
+                            if not el:
+                                continue
+                            btns = el.FindAll(TreeScope_Descendants, btn_cond)
+                            if not btns:
+                                continue
+
+                            for i in range(btns.Length):
+                                b = btns.GetElement(i)
+                                name = (b.CurrentName or "").strip().lower()
+                                aid = (b.CurrentAutomationId or "").strip()
+
+                                # 1. Check if already routed to PC (button displays 'Transfer to phone')
+                                if "transfer to phone" in name or "send call to mobile" in name:
+                                    print("[Audio Router] Call audio is already routed to PC (button displays 'Transfer to phone').")
+                                    return True
+
+                                # 2. Check if currently displaying 'Transfer to PC'
+                                if "transfer to pc" in name or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget"] or "transfertopc" in aid.lower():
+                                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{b.CurrentName}', AutomationId='{aid}'). Routing audio to PC...")
+
+                                    # A. UIAutomation InvokePattern
+                                    try:
+                                        pattern = b.GetCurrentPattern(UIA_InvokePatternId)
+                                        if pattern:
+                                            invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
+                                            invoker.Invoke()
+                                            print("[Audio Router] Successfully triggered 'Transfer to PC' via UI Automation!")
+                                    except Exception as ex:
+                                        print(f"[Audio Router] InvokePattern notice: {ex}")
+
+                                    # B. Hardware mouse click fallback
+                                    try:
+                                        rect = b.CurrentBoundingRectangle
+                                        bw = rect.right - rect.left
+                                        bh = rect.bottom - rect.top
+                                        if bw > 0 and bh > 0:
+                                            cx = rect.left + bw // 2
+                                            cy = rect.top + bh // 2
+                                            orig_pt = wintypes.POINT()
+                                            user32.GetCursorPos(ctypes.byref(orig_pt))
+                                            user32.SetCursorPos(cx, cy)
+                                            time.sleep(0.04)
+                                            user32.mouse_event(0x0002, 0, 0, 0, 0)
+                                            time.sleep(0.04)
+                                            user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                            time.sleep(0.04)
+                                            user32.SetCursorPos(orig_pt.x, orig_pt.y)
+                                            print(f"[Audio Router] Hardware click dispatched to Transfer button at ({cx}, {cy}).")
+                                    except Exception:
+                                        pass
+
+                                    time.sleep(0.4)
+                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Transfer to phone'.")
+                                    return True
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        comtypes.CoUninitialize()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        time.sleep(0.35)
+
+    return False
+
+
+def trigger_transfer_to_pc_async(timeout: float = 15.0):
+    """Launches ensure_call_transferred_to_pc in a daemon background thread."""
+    threading.Thread(target=ensure_call_transferred_to_pc, args=(timeout,), daemon=True).start()
+
+
 def _auto_press_dial(phone_number: str):
     """
     Background automation helper that brings Phone Link to focus,
-    locates the on-screen green 'Call' / 'Dial' button at (84.5%, 83.5%),
-    and automatically triggers the click and Enter key.
-    Exits as soon as the call connects.
+    locates the on-screen green 'Call' / 'Dial' button (ButtonCall),
+    automatically triggers the call, and ensures call audio transfers to PC.
     """
     import ctypes
     from ctypes import wintypes
@@ -115,13 +271,18 @@ def _auto_press_dial(phone_number: str):
         return found[0]
 
     # Initial brief pause for Phone Link UI to render the dial pad
-    time.sleep(0.6)
+    time.sleep(0.5)
+
+    # Launch asynchronous audio transfer watcher early so as soon as in-call banner appears, audio transfers to PC
+    trigger_transfer_to_pc_async(timeout=15.0)
 
     clicked_count = 0
     # Poll for up to 8 seconds (20 iterations x 0.4s)
     for _ in range(20):
         if _is_call_active():
             print("[Outbound Dialer] Cellular call active detected! Auto-dialer disengaging.")
+            # Re-ensure audio transfer once active
+            trigger_transfer_to_pc_async(timeout=10.0)
             return
 
         hwnd = _find_phone_link()
@@ -147,11 +308,48 @@ def _auto_press_dial(phone_number: str):
 
             # Only proceed if window is restored and has normal dimensions
             if w > 200 and h > 200:
-                # Keypad green Call button center: (84.5% X, 83.5% Y)
+                # 1. First attempt to invoke ButtonCall directly via UIAutomation if available
+                call_invoked = False
+                try:
+                    import comtypes
+                    import comtypes.client
+                    from comtypes.gen.UIAutomationClient import (
+                        IUIAutomation, TreeScope_Descendants,
+                        UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+                        UIA_InvokePatternId, IUIAutomationInvokePattern
+                    )
+                    comtypes.CoInitialize()
+                    try:
+                        uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
+                        el = uia.ElementFromHandle(hwnd)
+                        if el:
+                            cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+                            btns = el.FindAll(TreeScope_Descendants, cond)
+                            if btns:
+                                for i in range(btns.Length):
+                                    b = btns.GetElement(i)
+                                    bid = (b.CurrentAutomationId or "").strip()
+                                    bname = (b.CurrentName or "").strip().lower()
+                                    if bid == "ButtonCall" or "call dialled number" in bname:
+                                        p = b.GetCurrentPattern(UIA_InvokePatternId)
+                                        if p:
+                                            inv = p.QueryInterface(IUIAutomationInvokePattern)
+                                            inv.Invoke()
+                                            call_invoked = True
+                                            print("[Outbound Dialer] Invoked ButtonCall directly via UIAutomation!")
+                                            break
+                    finally:
+                        try:
+                            comtypes.CoUninitialize()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # 2. Window coordinate click fallback: Keypad green Call button center (84.5% X, 83.5% Y)
                 click_x = rect.left + int(w * 0.845)
                 click_y = rect.top + int(h * 0.835)
 
-                # Save original mouse position
                 orig_pt = wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(orig_pt))
 
@@ -175,12 +373,16 @@ def _auto_press_dial(phone_number: str):
                 user32.SetCursorPos(orig_pt.x, orig_pt.y)
 
                 clicked_count += 1
-                print(f"[Outbound Dialer] Auto-clicked Call button at ({click_x}, {click_y}) [attempt {clicked_count}].")
+                print(f"[Outbound Dialer] Dispatched Call trigger at ({click_x}, {click_y}) [attempt {clicked_count}].")
+
+                # Re-engage audio transfer to PC watcher
+                trigger_transfer_to_pc_async(timeout=12.0)
 
                 # If clicked at least twice, pause longer to check if connected
                 if clicked_count >= 3:
                     time.sleep(1.0)
                     if _is_call_active():
+                        trigger_transfer_to_pc_async(timeout=10.0)
                         return
 
         time.sleep(0.4)

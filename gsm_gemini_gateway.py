@@ -1237,6 +1237,9 @@ async def main_async():
             print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
             print("="*50)
 
+        # Automatically ensure call audio is transferred to PC (Phone Link switches to 'Transfer to phone')
+        dialer.trigger_transfer_to_pc_async(timeout=12.0)
+
         # Allow Windows Bluetooth SCO hardware link 350ms to settle
         await asyncio.sleep(0.35)
 
