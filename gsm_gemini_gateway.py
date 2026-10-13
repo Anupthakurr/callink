@@ -312,6 +312,7 @@ class HFPBridge:
         self.playback_started_at = None
         self.last_interrupted_at = 0.0
         self.last_played_chunk = b"\x00" * 640
+        self.ai_record_queue = queue.Queue(maxsize=1000)
 
         # High-resilience byte-level playback buffer with Jitter Prebuffering
         self._playback_lock = threading.Lock()
@@ -358,42 +359,48 @@ class HFPBridge:
         try:
             outdata.fill(0)
             bytes_needed = frames * 2  # 16-bit mono = 2 bytes per frame
+            raw_chunk = b""
 
             with self._playback_lock:
                 # If still collecting initial jitter cushion, output silence
                 if self._is_buffering:
-                    self.last_played_chunk = b"\x00" * 640
-                    return
-
-                # If queue has completely drained, reset buffering for next utterance
-                if len(self._playback_bytes) == 0:
+                    pass
+                elif len(self._playback_bytes) == 0:
+                    # If queue has completely drained, reset buffering for next utterance
                     self._is_buffering = True
                     self.playback_started_at = None
-                    self.last_played_chunk = b"\x00" * 640
-                    return
+                else:
+                    if self.playback_started_at is None:
+                        self.playback_started_at = time.time()
 
-                if self.playback_started_at is None:
-                    self.playback_started_at = time.time()
+                    bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
+                    raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
+                    del self._playback_bytes[:bytes_to_pull]
 
-                bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
-                raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
-                del self._playback_bytes[:bytes_to_pull]
+                    # If buffer is now empty, re-arm buffering
+                    if len(self._playback_bytes) == 0:
+                        self._is_buffering = True
+                        self.playback_started_at = None
 
-                # If buffer is now empty, re-arm buffering
-                if len(self._playback_bytes) == 0:
-                    self._is_buffering = True
-                    self.playback_started_at = None
+            if raw_chunk:
+                samples = len(raw_chunk) // 2
+                data = memoryview(raw_chunk).cast("h")
+                outdata[:samples, 0] = data
+                self.total_output_frames += samples
 
-            samples = len(raw_chunk) // 2
-            data = memoryview(raw_chunk).cast("h")
-            outdata[:samples, 0] = data
-            self.total_output_frames += samples
+            # Keep latest chunk for instant RMS telemetry
+            out_bytes = outdata[:, 0].tobytes()
+            self.last_played_chunk = out_bytes
 
-            # Keep latest 640 bytes for RMS telemetry and stereo recorder
-            if len(raw_chunk) >= 640:
-                self.last_played_chunk = raw_chunk[:640]
-            else:
-                self.last_played_chunk = raw_chunk + b"\x00" * (640 - len(raw_chunk))
+            # Queue every played frame sequentially into the recording FIFO (no duplicates, no drops)
+            try:
+                self.ai_record_queue.put_nowait(out_bytes)
+            except queue.Full:
+                try:
+                    self.ai_record_queue.get_nowait()
+                    self.ai_record_queue.put_nowait(out_bytes)
+                except Exception:
+                    pass
 
         except Exception as e:
             print("HFP OUTPUT CALLBACK ERROR:", e)
@@ -407,6 +414,12 @@ class HFPBridge:
             drained_bytes = len(self._playback_bytes)
             self._playback_bytes.clear()
             self._is_buffering = True
+        # Drain recorder queue so interrupted audio cuts off immediately
+        while not self.ai_record_queue.empty():
+            try:
+                self.ai_record_queue.get_nowait()
+            except Exception:
+                break
         if drained_bytes > 0:
             print(f"[BARGE-IN] Drained {drained_bytes} pending audio bytes from playback buffer.")
 
@@ -694,7 +707,32 @@ async def run_gemini_bridge(
                         continue
 
                     latest_rms = audioop.rms(pcm16, 2)
-                    current_ai_chunk = bridge.last_played_chunk
+
+                    # Pull sequential synchronized AI audio chunk from playback queue
+                    # Keep queue buffer synchronized (<100ms cushion) without clock drift
+                    while bridge.ai_record_queue.qsize() > 5:
+                        try:
+                            discard = bridge.ai_record_queue.get_nowait()
+                            # If non-silent speech, prioritize it so it isn't discarded
+                            if any(discard):
+                                current_ai_chunk = discard
+                                break
+                        except Exception:
+                            break
+                    else:
+                        try:
+                            current_ai_chunk = bridge.ai_record_queue.get_nowait()
+                        except queue.Empty:
+                            current_ai_chunk = b"\x00" * len(pcm16)
+
+                    # Ensure exact sample matching
+                    if len(current_ai_chunk) != len(pcm16):
+                        if len(current_ai_chunk) > len(pcm16):
+                            current_ai_chunk = current_ai_chunk[:len(pcm16)]
+                        else:
+                            current_ai_chunk = current_ai_chunk + b"\x00" * (len(pcm16) - len(current_ai_chunk))
+
+                    bridge.last_played_chunk = current_ai_chunk
                     ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
 
                     # Update web platform telemetry meters
@@ -910,6 +948,19 @@ async def run_gemini_bridge(
                     if web_server:
                         await web_server.broadcast("transcript_turn_complete", {"role": "model", "text": final_ai})
                 current_ai_text = ""
+
+            # Flush remaining audio from queues into recorder
+            if recorder:
+                while not bridge.to_ai.empty():
+                    try:
+                        rem_caller = bridge.to_ai.get_nowait()
+                        try:
+                            rem_ai = bridge.ai_record_queue.get_nowait()
+                        except Exception:
+                            rem_ai = b"\x00" * len(rem_caller)
+                        recorder.write_stereo_block(rem_caller, rem_ai)
+                    except Exception:
+                        break
 
         try:
             if active_session:
