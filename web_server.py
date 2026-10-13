@@ -492,7 +492,10 @@ class WebGatewayServer:
         doc = km.get_document_full(doc_id)
         if not doc:
             return web.Response(status=404, text="Document not found")
-        return web.json_response(doc)
+        response_data = dict(doc)
+        response_data["document"] = doc
+        response_data["success"] = True
+        return web.json_response(response_data)
 
     async def handle_get_knowledge_summary(self, request):
         summary = km.get_knowledge_summary()

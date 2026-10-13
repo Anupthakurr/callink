@@ -26,6 +26,11 @@ def load_documents_metadata() -> List[Dict[str, Any]]:
             with open(METADATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
+                    for doc in data:
+                        if "file_size" in doc and "size_bytes" not in doc:
+                            doc["size_bytes"] = doc["file_size"]
+                        elif "size_bytes" in doc and "file_size" not in doc:
+                            doc["file_size"] = doc["size_bytes"]
                     return data
         except Exception as e:
             print(f"[Knowledge Error] Could not read metadata: {e}")
@@ -130,6 +135,7 @@ def add_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "saved_filename": saved_filename,
         "file_type": ext.lstrip("."),
         "file_size": len(file_bytes),
+        "size_bytes": len(file_bytes),
         "uploaded_at": datetime.now().isoformat(),
         "word_count": words,
         "char_count": chars,

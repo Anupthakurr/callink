@@ -1757,7 +1757,7 @@ function filterAndRenderKnowledgeDocs() {
 
     const safeTitle = escapeHtml(doc.filename);
     const safeSnippet = escapeHtml(doc.preview || 'No preview available.');
-    const sizeStr = formatFileSize(doc.size_bytes);
+    const sizeStr = formatFileSize(doc.size_bytes || doc.file_size || 0);
     const wordsStr = (doc.word_count || 0).toLocaleString() + ' words';
     const timeStr = formatTimeAgo(doc.uploaded_at);
 
@@ -1895,24 +1895,31 @@ async function openDocPreview(docId) {
       return;
     }
     const data = await res.json();
-    const doc = data.document;
+    const doc = data.document || data;
 
-    if (title) title.textContent = doc.filename;
+    if (!doc || (!doc.text && !doc.preview && !doc.filename)) {
+      if (content) content.textContent = 'Document content is unavailable.';
+      return;
+    }
+
+    if (title) title.textContent = doc.filename || 'Document Preview';
     const ext = (doc.file_type || '').toLowerCase().replace('.', '');
     if (badge) {
-      badge.textContent = ext.toUpperCase();
+      badge.textContent = ext.toUpperCase() || 'DOC';
       badge.className = `format-pill format-${ext}`;
     }
-    if (wordCount) wordCount.textContent = `${(doc.word_count || 0).toLocaleString()} words`;
-    if (size) size.textContent = formatFileSize(doc.size_bytes);
+    const words = doc.word_count !== undefined ? doc.word_count : 0;
+    if (wordCount) wordCount.textContent = `${words.toLocaleString()} words`;
+    const bytes = doc.size_bytes || doc.file_size || 0;
+    if (size) size.textContent = formatFileSize(bytes);
     if (status) {
       status.textContent = doc.enabled ? 'Active in Live Calls' : 'Disabled';
       status.className = `status-badge-inline ${doc.enabled ? 'active' : 'disabled'}`;
     }
-    if (content) content.textContent = doc.text || '(Empty document)';
+    if (content) content.textContent = doc.text || doc.preview || '(Empty document)';
   } catch (e) {
     console.error('Error previewing document:', e);
-    if (content) content.textContent = 'Failed to load preview.';
+    if (content) content.textContent = 'Failed to load preview: ' + (e.message || e);
   }
 }
 
