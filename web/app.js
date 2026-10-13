@@ -283,6 +283,15 @@ function updateGatewayState(state) {
   const statusText = document.getElementById('statusText');
   const deviceText = document.getElementById('deviceText');
 
+  if (appState._cancelPending) {
+    hideOutboundDialingBanner();
+    if (statusPill && statusText) {
+      statusPill.className = 'status-pill status-standby';
+      statusText.textContent = 'STANDBY — WAITING FOR CALL';
+    }
+    return;
+  }
+
   // Update Status Pill
   if (state.status === 'in_call') {
     statusPill.className = 'status-pill status-in-call';
@@ -2155,16 +2164,40 @@ function initOutboundDialer() {
     }
   });
 
-  // Cancel Dialing
-  btnCancel?.addEventListener('click', async () => {
+  // Cancel Dialing: Direct listener + delegated document listener for absolute reliability
+  async function performCancelDial(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    appState._cancelPending = true;
+    hideOutboundDialingBanner();
+    showCallEndedBanner('OUTBOUND CALL CANCELLED', 'Dialing cancelled. Cellular line disconnected.');
+    showDialNotice('Outbound call canceled & hung up.', 'success');
+
+    const statusPill = document.getElementById('statusPill');
+    const statusText = document.getElementById('statusText');
+    if (statusPill && statusText) {
+      statusPill.className = 'status-pill status-standby';
+      statusText.textContent = 'CALL CANCELLED — STANDBY';
+    }
+
     try {
       await fetch('/api/dial/cancel', { method: 'POST' });
-      hideOutboundDialingBanner();
-      showCallEndedBanner('OUTBOUND CALL CANCELLED', 'Dialing was cancelled by user. Gateway returned to standby.');
-      showDialNotice('Outbound call canceled.', 'success');
-      fetchStatusPolling();
     } catch (err) {
       console.warn('Failed to cancel dial:', err);
+    } finally {
+      setTimeout(() => {
+        appState._cancelPending = false;
+        fetchStatusPolling();
+      }, 1500);
+    }
+  }
+
+  btnCancel?.addEventListener('click', performCancelDial);
+  document.addEventListener('click', (e) => {
+    if (e.target && e.target.closest && e.target.closest('#btnCancelOutboundDial')) {
+      performCancelDial(e);
     }
   });
 

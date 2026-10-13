@@ -449,6 +449,7 @@ class HFPBridge:
                     import outbound_dialer as dialer
                     if not dialer.get_active_outbound():
                         print("[Audio Link] Outbound call cancelled by user via dashboard.")
+                        dialer.cancel_outbound_dial()
                         return False
                 except Exception:
                     pass
@@ -1147,6 +1148,7 @@ async def main_async():
     prewarmer = None
 
     # 3. Main continuous standby loop for GSM cellular calls
+    _call_cancel_cooldown_until = 0.0
     while True:
         print(f"[{time.strftime('%H:%M:%S')}] Standby: Monitoring for incoming cellular calls...")
 
@@ -1169,9 +1171,14 @@ async def main_async():
                 await asyncio.sleep(0.3)
                 continue
 
-            # Break standby loop if WinRT reports active call OR an outbound dial is pending from web UI
+            # Break standby loop if an outbound dial is pending OR WinRT reports active call (not in cancel cooldown)
             outbound_pending = dialer.get_active_outbound()
-            if outbound_pending or call_active:
+            if outbound_pending:
+                break
+            if call_active:
+                if time.time() < _call_cancel_cooldown_until:
+                    await asyncio.sleep(0.2)
+                    continue
                 break
 
             if call_incoming and not was_incoming:
@@ -1257,13 +1264,24 @@ async def main_async():
                 print("[Telephony] Cellular call was not answered, cancelled, or declined. Returning to standby.")
                 if is_outbound:
                     dialer.cancel_outbound_dial()
+                _call_cancel_cooldown_until = time.time() + 4.0
                 web_server.state["status"] = "standby"
                 web_server.state["call_type"] = None
                 web_server.state["outbound_state"] = None
+                web_server.state["phone_call_active"] = False
+                web_server.state["phone_call_incoming"] = False
                 await web_server.broadcast("call_cancelled", {})
                 await web_server.broadcast("outbound_cancelled", {})
                 await web_server.broadcast("call_ended", {"metadata": None})
                 await web_server.broadcast("state_update", web_server.get_current_state_dict())
+                # Wait for cellular call to fully cease in WinRT before resuming standby monitoring
+                for _ in range(40):
+                    try:
+                        if not calls_winrt.PhoneCallManager.get_is_call_active():
+                            break
+                    except Exception:
+                        break
+                    await asyncio.sleep(0.1)
             else:
                 # Call is now physically connected and recipient has answered!
                 if is_outbound:

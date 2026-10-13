@@ -470,8 +470,10 @@ class WebGatewayServer:
         self.state["call_type"] = None
         self.state["call_id"] = None
         self.state["phone_call_active"] = False
+        self.state["phone_call_incoming"] = False
         await self.broadcast("outbound_cancelled", {})
         await self.broadcast("call_cancelled", {})
+        await self.broadcast("call_ended", {"metadata": None})
         await self.broadcast("state_update", self.get_current_state_dict())
         return web.json_response({"cancelled": cancelled})
 
