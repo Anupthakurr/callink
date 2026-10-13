@@ -277,9 +277,34 @@ def build_knowledge_prompt() -> str:
     return "\n".join(blocks)
 
 
-def get_effective_system_instruction(base_instruction: Optional[str] = None) -> str:
+LANGUAGE_PROMPTS = {
+    "auto": "Spoken Language: Automatically detect the caller's language and respond naturally in the exact same language (supports English, Hindi, Spanish, French, German, and all major languages).",
+    "en": "Spoken Language: Speak and respond primarily in English. If the caller speaks in another language, respond naturally in their language.",
+    "hi": "Spoken Language: Speak and respond primarily in Hindi (हिंदी). You may mix common English/Hinglish terms naturally as common in modern telephonic conversations in India.",
+    "es": "Spoken Language: Speak and respond primarily in Spanish (Español). Maintain a polite, natural conversational flow.",
+    "fr": "Spoken Language: Speak and respond primarily in French (Français). Maintain a polite, natural conversational flow.",
+    "de": "Spoken Language: Speak and respond primarily in German (Deutsch). Maintain a polite, natural conversational flow.",
+    "ja": "Spoken Language: Speak and respond primarily in Japanese (日本語). Use polite conversational Japanese (Teineigo).",
+    "zh": "Spoken Language: Speak and respond primarily in Mandarin Chinese (中文/普通话). Maintain a polite, natural conversational flow.",
+    "ar": "Spoken Language: Speak and respond primarily in Arabic (العربية). Maintain a polite, natural conversational flow.",
+    "pt": "Spoken Language: Speak and respond primarily in Portuguese (Português). Maintain a polite, natural conversational flow.",
+    "ru": "Spoken Language: Speak and respond primarily in Russian (Русский). Maintain a polite, natural conversational flow.",
+    "it": "Spoken Language: Speak and respond primarily in Italian (Italiano). Maintain a polite, natural conversational flow.",
+    "ko": "Spoken Language: Speak and respond primarily in Korean (한국어). Maintain a polite, natural conversational flow.",
+    "bn": "Spoken Language: Speak and respond primarily in Bengali (বাংলা). Maintain a polite, natural conversational flow.",
+    "mr": "Spoken Language: Speak and respond primarily in Marathi (मराठी). Maintain a polite, natural conversational flow.",
+    "ta": "Spoken Language: Speak and respond primarily in Tamil (தமிழ்). Maintain a polite, natural conversational flow.",
+    "te": "Spoken Language: Speak and respond primarily in Telugu (తెలుగు). Maintain a polite, natural conversational flow.",
+    "gu": "Spoken Language: Speak and respond primarily in Gujarati (ગુજરાતી). Maintain a polite, natural conversational flow.",
+    "pa": "Spoken Language: Speak and respond primarily in Punjabi (ਪੰਜਾਬੀ). Maintain a polite, natural conversational flow.",
+    "kn": "Spoken Language: Speak and respond primarily in Kannada (ಕನ್ನಡ). Maintain a polite, natural conversational flow.",
+    "ml": "Spoken Language: Speak and respond primarily in Malayalam (മലയാളം). Maintain a polite, natural conversational flow.",
+}
+
+
+def get_effective_system_instruction(base_instruction: Optional[str] = None, language: Optional[str] = "en") -> str:
     """
-    Combines the AI Persona base instruction with the active Business Knowledge Base.
+    Combines the AI Persona base instruction, language directive, and the active Business Knowledge Base.
     """
     default_base = (
         "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
@@ -287,8 +312,15 @@ def get_effective_system_instruction(base_instruction: Optional[str] = None) -> 
         "Respond immediately and concisely without long preambles."
     )
     instruction = (base_instruction or "").strip() or default_base
+
+    lang_key = (language or "en").strip().lower()
+    lang_directive = LANGUAGE_PROMPTS.get(lang_key, LANGUAGE_PROMPTS.get("en", ""))
+    if lang_directive:
+        instruction = f"{instruction}\n\n[PRIMARY LANGUAGE DIRECTIVE]\n{lang_directive}"
+
     knowledge = build_knowledge_prompt()
 
     if knowledge:
         return f"{instruction}\n\n{knowledge}"
     return instruction
+

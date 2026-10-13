@@ -605,8 +605,9 @@ async def run_gemini_bridge(
 
     settings = load_settings()
     voice_name = settings.get("voice_name", "Puck")
+    lang = settings.get("language", "en")
     base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
-    system_instruction = km.get_effective_system_instruction(base_inst)
+    system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
     vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
 
     client = genai.Client(api_key=api_key)
@@ -1141,8 +1142,9 @@ async def main_async():
                 if api_key:
                     curr_settings = load_settings()
                     v_name = curr_settings.get("voice_name", "Puck")
+                    lang = curr_settings.get("language", "en")
                     base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
-                    sys_inst = km.get_effective_system_instruction(base_inst)
+                    sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
                     live_cfg = types.LiveConnectConfig(
                         response_modalities=["AUDIO"],
                         system_instruction=sys_inst,

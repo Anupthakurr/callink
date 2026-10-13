@@ -224,6 +224,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 # Default gateway settings
 DEFAULT_SETTINGS = {
     "voice_name": "Puck",
+    "language": "en",
     "system_instruction": (
         "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
         "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
@@ -345,6 +346,7 @@ class WebGatewayServer:
         self.state["api_key_configured"] = bool(api_key)
         self.state["gemini_model"] = "gemini-3.1-flash-live-preview"
         self.state["voice_name"] = settings.get("voice_name", "Puck")
+        self.state["language"] = settings.get("language", "en")
         self.state["vad_threshold"] = settings.get("vad_threshold", 3600)
         self.state["audio_sample_rate"] = 16000
         self.state["audio_format"] = "16 kHz 16-Bit PCM Mono SCO"
@@ -499,8 +501,17 @@ class WebGatewayServer:
 
     async def handle_get_knowledge_summary(self, request):
         summary = km.get_knowledge_summary()
+        settings = load_settings()
+        base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+        lang = settings.get("language", "en")
+        full_inst = km.get_effective_system_instruction(base_inst, language=lang)
         prompt = km.build_knowledge_prompt()
-        return web.json_response({"summary": summary, "prompt": prompt})
+        return web.json_response({
+            "summary": summary,
+            "prompt": prompt,
+            "effective_instruction": full_inst,
+            "language": lang
+        })
 
     async def handle_get_settings(self, request):
         settings = load_settings()
@@ -524,7 +535,7 @@ class WebGatewayServer:
 
             # Save other settings
             update_data = {}
-            for k in ["voice_name", "system_instruction", "vad_threshold", "barge_in_grace_period", "auto_launch_browser"]:
+            for k in ["voice_name", "language", "system_instruction", "vad_threshold", "barge_in_grace_period", "auto_launch_browser"]:
                 if k in body:
                     update_data[k] = body[k]
             save_settings(update_data)
@@ -664,8 +675,9 @@ class WebGatewayServer:
 
         settings = load_settings()
         voice_name = settings.get("voice_name", "Puck")
+        lang = settings.get("language", "en")
         base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
-        system_instruction = km.get_effective_system_instruction(base_inst)
+        system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
 
         # Create browser recorder
         recorder = CallRecorder(call_type="browser")

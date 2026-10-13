@@ -1213,6 +1213,10 @@ async function loadSettings() {
     if (data.voice_name) {
       document.getElementById('selectVoice').value = data.voice_name;
     }
+    if (data.language) {
+      const selectLang = document.getElementById('selectLanguage');
+      if (selectLang) selectLang.value = data.language;
+    }
     if (data.system_instruction) {
       document.getElementById('textareaPrompt').value = data.system_instruction;
     }
@@ -1232,11 +1236,13 @@ async function loadSettings() {
 async function saveSettings() {
   const apiKey = document.getElementById('inputApiKey').value.trim();
   const voiceName = document.getElementById('selectVoice').value;
+  const language = document.getElementById('selectLanguage')?.value || 'en';
   const prompt = document.getElementById('textareaPrompt').value.trim();
   const vad = parseInt(document.getElementById('sliderVad').value, 10);
 
   const payload = {
     voice_name: voiceName,
+    language: language,
     system_instruction: prompt,
     vad_threshold: vad,
   };
@@ -1931,32 +1937,19 @@ async function openPromptInspector() {
   if (modal) modal.classList.remove('hidden');
 
   try {
-    // Fetch settings to get base instruction
+    const res = await fetch('/api/knowledge/summary');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.effective_instruction) {
+        if (content) content.textContent = data.effective_instruction;
+        return;
+      }
+    }
+
     const settingsRes = await fetch('/api/settings');
     const settings = settingsRes.ok ? await settingsRes.json() : {};
     const basePrompt = settings.system_instruction || "You are a helpful AI voice assistant.";
-
-    // Active docs
-    const activeDocs = appState.knowledgeDocs.filter(d => d.enabled);
-
-    let compiledPrompt = basePrompt.trim();
-
-    if (activeDocs.length > 0) {
-      compiledPrompt += `\n\n==================================================\n`;
-      compiledPrompt += `BUSINESS KNOWLEDGE BASE & REFERENCE MATERIAL\n`;
-      compiledPrompt += `==================================================\n`;
-      compiledPrompt += `You have access to the verified business documents below. Use this information to accurately answer caller queries regarding pricing, offerings, policies, hours, and business details. If a caller asks about something covered here, answer based on these facts concisely and conversationally.\n\n`;
-
-      activeDocs.forEach((doc, idx) => {
-        compiledPrompt += `--- DOCUMENT ${idx + 1}: ${doc.filename} ---\n`;
-        compiledPrompt += `${doc.preview || ''}\n[... full document content injected into Gemini session ...]\n\n`;
-      });
-      compiledPrompt += `==================================================\nEND OF BUSINESS KNOWLEDGE BASE\n==================================================`;
-    } else {
-      compiledPrompt += `\n\n[No active business documents uploaded. Live call grounding is operating on base persona.]`;
-    }
-
-    if (content) content.textContent = compiledPrompt;
+    if (content) content.textContent = basePrompt;
   } catch (e) {
     console.error('Error opening prompt inspector:', e);
     if (content) content.textContent = 'Failed to load prompt preview.';
