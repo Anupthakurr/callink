@@ -434,19 +434,38 @@ class HFPBridge:
         except Exception:
             return False
 
-    def start(self, max_retries: int = 10, retry_delay: float = 0.35, is_outbound: bool = False) -> bool:
+    def start(self, max_retries: int = 20, retry_delay: float = 0.35, is_outbound: bool = False) -> bool:
         if is_outbound:
             # Outbound cellular calls take time to ring on the mobile network until recipient answers!
             max_retries = 60
             retry_delay = 0.75
 
+        inactive_streak = 0
         for attempt in range(1, max_retries + 1):
+            if is_outbound:
+                # Check if user cancelled from dashboard
+                try:
+                    import outbound_dialer as dialer
+                    if not dialer.get_active_outbound():
+                        print("[Audio Link] Outbound call cancelled by user via dashboard.")
+                        return False
+                except Exception:
+                    pass
+
             # Check if cellular call was hung up, cancelled, or declined while waiting for pickup
             try:
                 from winrt.windows.applicationmodel.calls import PhoneCallManager
-                if not PhoneCallManager.get_is_call_active():
-                    print("[Audio Link] Cellular call ended or declined before pickup.")
-                    return False
+                is_active = PhoneCallManager.get_is_call_active()
+                if not is_active:
+                    inactive_streak += 1
+                    # During dialing, Phone Link/WinRT can briefly report False during state handoff.
+                    # Only declare ended if sustained inactive for at least 5 consecutive attempts (~3.75s)
+                    # and past the initial dialing buffer (after attempt 3).
+                    if attempt > 3 and inactive_streak >= 5:
+                        print("[Audio Link] Cellular call ended or declined before pickup.")
+                        return False
+                else:
+                    inactive_streak = 0
             except Exception:
                 pass
 
@@ -502,8 +521,12 @@ class HFPBridge:
                         print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
                     time.sleep(retry_delay)
                 else:
-                    print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
-                    raise
+                    if is_outbound:
+                        print(f"[Audio Link] Outbound call not answered by recipient after {int(max_retries * retry_delay)}s.")
+                        return False
+                    else:
+                        print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
+                        raise
 
         return False
 
@@ -1145,7 +1168,9 @@ async def main_async():
                 await asyncio.sleep(0.3)
                 continue
 
-            if call_active:
+            # Break standby loop if WinRT reports active call OR an outbound dial is pending from web UI
+            outbound_pending = dialer.get_active_outbound()
+            if outbound_pending or call_active:
                 break
 
             if call_incoming and not was_incoming:
@@ -1190,46 +1215,29 @@ async def main_async():
 
             await asyncio.sleep(0.1)
 
-        # Check if an outbound call was dialed and has now connected
-        outbound_info = dialer.consume_active_outbound()
-        if outbound_info:
+        # Check if an outbound call was dialed
+        outbound_info = dialer.get_active_outbound()
+        is_outbound = bool(outbound_info)
+        recorder = None
+        started = False
+
+        if is_outbound:
             call_type = "outbound_gsm"
             print("\n" + "="*50)
-            print(f" >>> OUTBOUND CELLULAR CALL CONNECTED TO {outbound_info.get('contact_name')} ({outbound_info.get('phone_number')}) <<<")
-            print(" >>> ENGAGING AI PROACTIVE VOICE GATEWAY (AI SPEAKS FIRST) <<<")
+            print(f" >>> OUTBOUND CELLULAR CALL TO {outbound_info.get('contact_name')} ({outbound_info.get('phone_number')}) <<<")
+            print(" >>> AWAITING RECIPIENT PICKUP TO ENGAGE PROACTIVE AI (AI SPEAKS FIRST) <<<")
             print("="*50)
+            web_server.state["status"] = "ringing"
+            web_server.state["call_type"] = call_type
+            web_server.state["outbound_state"] = outbound_info
+            await web_server.broadcast("outbound_ringing", {"outbound": outbound_info})
         else:
             call_type = "gsm"
             print("\n" + "="*50)
             print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
             print("="*50)
 
-        # Mute background hardware monitor during call to protect audio threads
-        from web_server import set_in_call_state
-        set_in_call_state(True)
-
-        # Initialize Dual-Track Audio Recorder
-        recorder = CallRecorder(call_type=call_type)
-        if outbound_info:
-            recorder.extra_metadata = {
-                "direction": "outbound",
-                "outbound_info": outbound_info,
-            }
-        recorder.start()
-
-        # Update Server State
-        web_server.state["status"] = "in_call"
-        web_server.state["call_type"] = call_type
-        web_server.state["call_id"] = recorder.call_id
-        web_server.state["call_start_time"] = time.time()
-        web_server.state["live_transcripts"] = []
-        await web_server.broadcast("call_started", {
-            "call_id": recorder.call_id,
-            "call_type": call_type,
-            "outbound": outbound_info
-        })
-
-        # Allow Windows Bluetooth SCO hardware link 350ms to settle upon pickup
+        # Allow Windows Bluetooth SCO hardware link 350ms to settle
         await asyncio.sleep(0.35)
 
         # Re-resolve endpoints to capture freshly activated WASAPI or updated endpoints
@@ -1240,10 +1248,45 @@ async def main_async():
             bridge = HFPBridge(in_dev=cached_in_dev, out_dev=cached_out_dev)
 
         try:
-            started = bridge.start(is_outbound=bool(outbound_info))
+            started = bridge.start(is_outbound=is_outbound)
             if not started:
-                print("[Telephony] Cellular call was not answered or was cancelled. Returning to standby.")
+                print("[Telephony] Cellular call was not answered, cancelled, or declined. Returning to standby.")
+                if is_outbound:
+                    dialer.cancel_outbound_dial()
+                web_server.state["status"] = "standby"
+                web_server.state["call_type"] = None
+                web_server.state["outbound_state"] = None
+                await web_server.broadcast("call_cancelled", {})
             else:
+                # Call is now physically connected and recipient has answered!
+                if is_outbound:
+                    outbound_info = dialer.consume_active_outbound() or outbound_info
+
+                # Mute background hardware monitor during call to protect audio threads
+                from web_server import set_in_call_state
+                set_in_call_state(True)
+
+                # Initialize Dual-Track Audio Recorder
+                recorder = CallRecorder(call_type=call_type)
+                if outbound_info:
+                    recorder.extra_metadata = {
+                        "direction": "outbound",
+                        "outbound_info": outbound_info,
+                    }
+                recorder.start()
+
+                # Update Server State
+                web_server.state["status"] = "in_call"
+                web_server.state["call_type"] = call_type
+                web_server.state["call_id"] = recorder.call_id
+                web_server.state["call_start_time"] = time.time()
+                web_server.state["live_transcripts"] = []
+                await web_server.broadcast("call_started", {
+                    "call_id": recorder.call_id,
+                    "call_type": call_type,
+                    "outbound": outbound_info
+                })
+
                 stop_event = asyncio.Event()
                 await asyncio.gather(
                     run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer, outbound_info=outbound_info),
@@ -1265,7 +1308,14 @@ async def main_async():
             set_in_call_state(False)
 
             # Finalize call audio recording and broadcast to web platform
-            metadata = recorder.finish()
+            metadata = None
+            if started and recorder:
+                metadata = recorder.finish()
+                print("="*50)
+                print(f" >>> CELLULAR CALL ENDED: Saved recording {metadata.get('wav_file')} ({metadata.get('duration_seconds')}s) <<<")
+                print("="*50 + "\n")
+                await web_server.broadcast("call_ended", {"metadata": metadata})
+
             web_server.state["status"] = "standby"
             web_server.state["call_type"] = None
             web_server.state["call_id"] = None
@@ -1273,16 +1323,14 @@ async def main_async():
             web_server.state["caller_rms"] = 0
             web_server.state["ai_rms"] = 0
             web_server.state["phone_call_incoming"] = False
+            web_server.state["outbound_state"] = None
             web_server.state["phone_call_active"] = False
-            await web_server.broadcast("call_ended", {"metadata": metadata})
 
-            print("="*50)
-            print(f" >>> CELLULAR CALL ENDED: Saved recording {metadata.get('wav_file')} ({metadata.get('duration_seconds')}s) <<<")
-            print("="*50 + "\n")
-
-        # Wait until cellular call is fully cleared before returning to standby
-        while PhoneCallManager.get_is_call_active():
+        # Wait up to 3.0s for cellular call to fully clear in WinRT before returning to standby
+        clear_wait = 0.0
+        while PhoneCallManager.get_is_call_active() and clear_wait < 3.0:
             await asyncio.sleep(0.1)
+            clear_wait += 0.1
 
 
 def main():
