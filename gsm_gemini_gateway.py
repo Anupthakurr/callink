@@ -457,26 +457,18 @@ class HFPBridge:
             try:
                 from winrt.windows.applicationmodel.calls import PhoneCallManager
                 is_active = PhoneCallManager.get_is_call_active()
-                if is_active:
-                    had_connected = True
-                    inactive_streak = 0
-                else:
-                    if is_outbound:
-                        # For outbound calls, the phone is ringing before pickup.
-                        # Only declare call dropped if it was previously connected and then hung up.
-                        if had_connected:
-                            inactive_streak += 1
-                            if inactive_streak >= 3:
-                                print("[Audio Link] Outbound call hung up after connection.")
-                                return False
-                    else:
-                        # For incoming calls, if sustained inactive for 3 attempts, caller hung up before streams opened
-                        inactive_streak += 1
-                        if inactive_streak >= 3:
-                            print("[Audio Link] Incoming call ceased before audio bridge opened.")
-                            return False
             except Exception:
-                pass
+                is_active = False
+
+            if not is_outbound:
+                # For incoming calls only: if caller hung up before audio bridge opened
+                if not is_active:
+                    inactive_streak += 1
+                    if inactive_streak >= 4:
+                        print("[Audio Link] Incoming call ceased before audio bridge opened.")
+                        return False
+                else:
+                    inactive_streak = 0
 
             if self.input_device is None or self.output_device is None:
                 in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=(attempt > 1))
@@ -535,7 +527,7 @@ class HFPBridge:
                         return False
                     else:
                         print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
-                        raise
+                        return False
 
         return False
 

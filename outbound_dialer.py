@@ -100,111 +100,154 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
 
         # Find visible Phone Link windows and Windows Call toast popups
         candidate_hwnds = []
+        pl_h1 = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link")
+        if pl_h1:
+            candidate_hwnds.append(pl_h1)
+        pl_h2 = user32.FindWindowW(None, "Phone Link")
+        if pl_h2 and pl_h2 not in candidate_hwnds:
+            candidate_hwnds.append(pl_h2)
+
         def _enum_cb(h, lp):
             if user32.IsWindowVisible(h):
                 pname = _get_proc_name(h).lower()
-                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe"]:
-                    candidate_hwnds.append(h)
+                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe", "explorer.exe"]:
+                    if h not in candidate_hwnds:
+                        candidate_hwnds.append(h)
                 else:
                     length = user32.GetWindowTextLengthW(h)
                     if length > 0:
                         buf = ctypes.create_unicode_buffer(length + 1)
                         user32.GetWindowTextW(h, buf, length + 1)
                         title = buf.value.lower()
-                        if "phone link" in title or "your phone" in title or title == "calls" or title.startswith("calls"):
-                            candidate_hwnds.append(h)
+                        if "phone link" in title or "your phone" in title or "call" in title:
+                            if h not in candidate_hwnds:
+                                candidate_hwnds.append(h)
             return True
 
+        cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
         if hdesk:
-            cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
             user32.EnumDesktopWindows(hdesk, cb, 0)
+        user32.EnumWindows(cb, 0)
 
         # Inspect controls via UI Automation
-        if candidate_hwnds:
+        try:
+            import comtypes
+            import comtypes.client
+            from comtypes.gen.UIAutomationClient import (
+                IUIAutomation, TreeScope_Descendants,
+                UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+                UIA_InvokePatternId, IUIAutomationInvokePattern
+            )
+
+            comtypes.CoInitialize()
             try:
-                import comtypes
-                import comtypes.client
-                from comtypes.gen.UIAutomationClient import (
-                    IUIAutomation, TreeScope_Descendants,
-                    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
-                    UIA_InvokePatternId, IUIAutomationInvokePattern
-                )
+                uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
+                root = uia.GetRootElement()
 
-                comtypes.CoInitialize()
+                UIA_NamePropertyId = 30005
+                UIA_AutomationIdPropertyId = 30011
+
+                # Global fast check if already transferred
                 try:
-                    uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
-                    btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+                    c_already = uia.CreatePropertyCondition(UIA_NamePropertyId, "Transfer to phone")
+                    b_already = root.FindFirst(TreeScope_Descendants, c_already)
+                    if b_already:
+                        print("[Audio Router] Call audio is already routed to PC (button displays 'Transfer to phone').")
+                        return True
+                except Exception:
+                    pass
 
-                    for hwnd in candidate_hwnds:
-                        try:
-                            el = uia.ElementFromHandle(hwnd)
-                            if not el:
-                                continue
-                            btns = el.FindAll(TreeScope_Descendants, btn_cond)
-                            if not btns:
-                                continue
-
-                            for i in range(btns.Length):
-                                b = btns.GetElement(i)
-                                name = (b.CurrentName or "").strip().lower()
-                                aid = (b.CurrentAutomationId or "").strip()
-
-                                # 1. Check if already routed to PC (button displays 'Transfer to phone')
-                                if "transfer to phone" in name or "send call to mobile" in name:
-                                    print("[Audio Router] Call audio is already routed to PC (button displays 'Transfer to phone').")
-                                    return True
-
-                                # 2. Check if currently displaying 'Transfer to PC'
-                                if (
-                                    "transfer to pc" in name
-                                    or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
-                                    or "transfertopc" in aid.lower()
-                                ):
-                                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{b.CurrentName}', AutomationId='{aid}'). Routing audio to PC...")
-
-                                    # A. UIAutomation InvokePattern
-                                    try:
-                                        pattern = b.GetCurrentPattern(UIA_InvokePatternId)
-                                        if pattern:
-                                            invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
-                                            invoker.Invoke()
-                                            print("[Audio Router] Successfully triggered 'Transfer to PC' via UI Automation!")
-                                    except Exception as ex:
-                                        print(f"[Audio Router] InvokePattern notice: {ex}")
-
-                                    # B. Hardware mouse click fallback
-                                    try:
-                                        rect = b.CurrentBoundingRectangle
-                                        bw = rect.right - rect.left
-                                        bh = rect.bottom - rect.top
-                                        if bw > 0 and bh > 0:
-                                            cx = rect.left + bw // 2
-                                            cy = rect.top + bh // 2
-                                            orig_pt = wintypes.POINT()
-                                            user32.GetCursorPos(ctypes.byref(orig_pt))
-                                            user32.SetCursorPos(cx, cy)
-                                            time.sleep(0.04)
-                                            user32.mouse_event(0x0002, 0, 0, 0, 0)
-                                            time.sleep(0.04)
-                                            user32.mouse_event(0x0004, 0, 0, 0, 0)
-                                            time.sleep(0.04)
-                                            user32.SetCursorPos(orig_pt.x, orig_pt.y)
-                                            print(f"[Audio Router] Hardware click dispatched to Transfer button at ({cx}, {cy}).")
-                                    except Exception:
-                                        pass
-
-                                    time.sleep(0.4)
-                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Transfer to phone'.")
-                                    return True
-                        except Exception:
-                            pass
-                finally:
+                def _click_transfer_btn(b):
+                    name = (b.CurrentName or "").strip()
+                    aid = (b.CurrentAutomationId or "").strip()
+                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Routing audio to PC...")
+                    # 1. InvokePattern
                     try:
-                        comtypes.CoUninitialize()
+                        pattern = b.GetCurrentPattern(UIA_InvokePatternId)
+                        if pattern:
+                            invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
+                            invoker.Invoke()
+                            print("[Audio Router] Successfully triggered 'Transfer to PC' via UI Automation!")
+                    except Exception as ex:
+                        print(f"[Audio Router] InvokePattern notice: {ex}")
+
+                    # 2. Hardware click fallback
+                    try:
+                        rect = b.CurrentBoundingRectangle
+                        bw = rect.right - rect.left
+                        bh = rect.bottom - rect.top
+                        if bw > 0 and bh > 0:
+                            cx = rect.left + bw // 2
+                            cy = rect.top + bh // 2
+                            orig_pt = wintypes.POINT()
+                            user32.GetCursorPos(ctypes.byref(orig_pt))
+                            user32.SetCursorPos(cx, cy)
+                            time.sleep(0.04)
+                            user32.mouse_event(0x0002, 0, 0, 0, 0)
+                            time.sleep(0.04)
+                            user32.mouse_event(0x0004, 0, 0, 0, 0)
+                            time.sleep(0.04)
+                            user32.SetCursorPos(orig_pt.x, orig_pt.y)
+                            print(f"[Audio Router] Hardware click dispatched to Transfer button at ({cx}, {cy}).")
                     except Exception:
                         pass
-            except Exception:
-                pass
+                    time.sleep(0.4)
+                    print("[Audio Router] Call audio transferred to PC! Now showing 'Transfer to phone'.")
+                    return True
+
+                # Check root targets directly
+                for target_id in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]:
+                    try:
+                        c_target = uia.CreatePropertyCondition(UIA_AutomationIdPropertyId, target_id)
+                        b_target = root.FindFirst(TreeScope_Descendants, c_target)
+                        if b_target:
+                            return _click_transfer_btn(b_target)
+                    except Exception:
+                        pass
+
+                try:
+                    c_name_transfer = uia.CreatePropertyCondition(UIA_NamePropertyId, "Transfer to PC")
+                    b_name_transfer = root.FindFirst(TreeScope_Descendants, c_name_transfer)
+                    if b_name_transfer:
+                        return _click_transfer_btn(b_name_transfer)
+                except Exception:
+                    pass
+
+                # Inspect candidates
+                btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+                for hwnd in candidate_hwnds:
+                    try:
+                        el = uia.ElementFromHandle(hwnd)
+                        if not el:
+                            continue
+                        btns = el.FindAll(TreeScope_Descendants, btn_cond)
+                        if not btns:
+                            continue
+
+                        for i in range(btns.Length):
+                            b = btns.GetElement(i)
+                            name = (b.CurrentName or "").strip().lower()
+                            aid = (b.CurrentAutomationId or "").strip()
+
+                            if "transfer to phone" in name or "send call to mobile" in name:
+                                print("[Audio Router] Call audio is already routed to PC (button displays 'Transfer to phone').")
+                                return True
+
+                            if (
+                                "transfer to pc" in name
+                                or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
+                                or "transfertopc" in aid.lower()
+                            ):
+                                return _click_transfer_btn(b)
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         time.sleep(0.35)
 
