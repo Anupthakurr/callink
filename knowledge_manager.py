@@ -281,6 +281,7 @@ LANGUAGE_PROMPTS = {
     "auto": "Spoken Language: Automatically detect the caller's language and respond naturally in the exact same language (supports English, Hindi, Spanish, French, German, and all major languages).",
     "en": "Spoken Language: Speak and respond primarily in English. If the caller speaks in another language, respond naturally in their language.",
     "hi": "Spoken Language: Speak and respond primarily in Hindi (हिंदी). You may mix common English/Hinglish terms naturally as common in modern telephonic conversations in India.",
+    "mai": "Spoken Language: Speak and respond primarily in Maithili (मैथिली). Use natural, respectful, and polite conversational Maithili as spoken in Mithila.",
     "es": "Spoken Language: Speak and respond primarily in Spanish (Español). Maintain a polite, natural conversational flow.",
     "fr": "Spoken Language: Speak and respond primarily in French (Français). Maintain a polite, natural conversational flow.",
     "de": "Spoken Language: Speak and respond primarily in German (Deutsch). Maintain a polite, natural conversational flow.",
