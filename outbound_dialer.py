@@ -98,12 +98,12 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
     while time.time() - start_time < timeout:
         hdesk = _attach_desktop()
 
-        # Find visible Phone Link windows
+        # Find visible Phone Link windows and Windows Call toast popups
         candidate_hwnds = []
         def _enum_cb(h, lp):
             if user32.IsWindowVisible(h):
                 pname = _get_proc_name(h).lower()
-                if pname in ["phoneexperiencehost.exe", "yourphone.exe"]:
+                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "shellexperiencehost.exe"]:
                     candidate_hwnds.append(h)
                 else:
                     length = user32.GetWindowTextLengthW(h)
@@ -111,7 +111,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                         buf = ctypes.create_unicode_buffer(length + 1)
                         user32.GetWindowTextW(h, buf, length + 1)
                         title = buf.value.lower()
-                        if "phone link" in title or "your phone" in title:
+                        if "phone link" in title or "your phone" in title or title == "calls" or title.startswith("calls"):
                             candidate_hwnds.append(h)
             return True
 
@@ -155,7 +155,11 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                     return True
 
                                 # 2. Check if currently displaying 'Transfer to PC'
-                                if "transfer to pc" in name or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget"] or "transfertopc" in aid.lower():
+                                if (
+                                    "transfer to pc" in name
+                                    or aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget"]
+                                    or "transfertopc" in aid.lower()
+                                ):
                                     print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{b.CurrentName}', AutomationId='{aid}'). Routing audio to PC...")
 
                                     # A. UIAutomation InvokePattern

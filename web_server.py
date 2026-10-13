@@ -466,7 +466,13 @@ class WebGatewayServer:
     async def handle_post_dial_cancel(self, request):
         cancelled = dialer.cancel_outbound_dial()
         self.state["outbound_state"] = None
+        self.state["status"] = "standby"
+        self.state["call_type"] = None
+        self.state["call_id"] = None
+        self.state["phone_call_active"] = False
         await self.broadcast("outbound_cancelled", {})
+        await self.broadcast("call_cancelled", {})
+        await self.broadcast("state_update", self.get_current_state_dict())
         return web.json_response({"cancelled": cancelled})
 
     async def handle_get_dial_status(self, request):

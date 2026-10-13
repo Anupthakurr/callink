@@ -99,7 +99,7 @@ from google import genai
 from google.genai import types
 
 from call_recorder import CallRecorder
-from web_server import WebGatewayServer, load_settings, DEFAULT_SETTINGS
+from web_server import WebGatewayServer, load_settings, DEFAULT_SETTINGS, set_in_call_state
 import knowledge_manager as km
 import outbound_dialer as dialer
 
@@ -440,6 +440,7 @@ class HFPBridge:
             max_retries = 60
             retry_delay = 0.75
 
+        had_connected = False
         inactive_streak = 0
         for attempt in range(1, max_retries + 1):
             if is_outbound:
@@ -452,20 +453,28 @@ class HFPBridge:
                 except Exception:
                     pass
 
-            # Check if cellular call was hung up, cancelled, or declined while waiting for pickup
+            # Check call active status
             try:
                 from winrt.windows.applicationmodel.calls import PhoneCallManager
                 is_active = PhoneCallManager.get_is_call_active()
-                if not is_active:
-                    inactive_streak += 1
-                    # During dialing, Phone Link/WinRT can briefly report False during state handoff.
-                    # Only declare ended if sustained inactive for at least 5 consecutive attempts (~3.75s)
-                    # and past the initial dialing buffer (after attempt 3).
-                    if attempt > 3 and inactive_streak >= 5:
-                        print("[Audio Link] Cellular call ended or declined before pickup.")
-                        return False
-                else:
+                if is_active:
+                    had_connected = True
                     inactive_streak = 0
+                else:
+                    if is_outbound:
+                        # For outbound calls, the phone is ringing before pickup.
+                        # Only declare call dropped if it was previously connected and then hung up.
+                        if had_connected:
+                            inactive_streak += 1
+                            if inactive_streak >= 3:
+                                print("[Audio Link] Outbound call hung up after connection.")
+                                return False
+                    else:
+                        # For incoming calls, if sustained inactive for 3 attempts, caller hung up before streams opened
+                        inactive_streak += 1
+                        if inactive_streak >= 3:
+                            print("[Audio Link] Incoming call ceased before audio bridge opened.")
+                            return False
             except Exception:
                 pass
 
@@ -1260,14 +1269,18 @@ async def main_async():
                 web_server.state["call_type"] = None
                 web_server.state["outbound_state"] = None
                 await web_server.broadcast("call_cancelled", {})
+                await web_server.broadcast("outbound_cancelled", {})
+                await web_server.broadcast("call_ended", {"metadata": None})
+                await web_server.broadcast("state_update", web_server.get_current_state_dict())
             else:
                 # Call is now physically connected and recipient has answered!
                 if is_outbound:
                     outbound_info = dialer.consume_active_outbound() or outbound_info
 
-                # Mute background hardware monitor during call to protect audio threads
-                from web_server import set_in_call_state
-                set_in_call_state(True)
+                try:
+                    set_in_call_state(True)
+                except Exception:
+                    pass
 
                 # Initialize Dual-Track Audio Recorder
                 recorder = CallRecorder(call_type=call_type)
@@ -1289,6 +1302,7 @@ async def main_async():
                     "call_type": call_type,
                     "outbound": outbound_info
                 })
+                await web_server.broadcast("state_update", {"state": web_server.get_current_state_dict()})
 
                 stop_event = asyncio.Event()
                 await asyncio.gather(
@@ -1308,7 +1322,15 @@ async def main_async():
             except Exception:
                 pass
 
-            set_in_call_state(False)
+            try:
+                set_in_call_state(False)
+            except Exception:
+                pass
+
+            try:
+                dialer.cancel_outbound_dial()
+            except Exception:
+                pass
 
             # Finalize call audio recording and broadcast to web platform
             metadata = None
@@ -1317,7 +1339,6 @@ async def main_async():
                 print("="*50)
                 print(f" >>> CELLULAR CALL ENDED: Saved recording {metadata.get('wav_file')} ({metadata.get('duration_seconds')}s) <<<")
                 print("="*50 + "\n")
-                await web_server.broadcast("call_ended", {"metadata": metadata})
 
             web_server.state["status"] = "standby"
             web_server.state["call_type"] = None
@@ -1328,6 +1349,11 @@ async def main_async():
             web_server.state["phone_call_incoming"] = False
             web_server.state["outbound_state"] = None
             web_server.state["phone_call_active"] = False
+
+            await web_server.broadcast("call_ended", {"metadata": metadata})
+            await web_server.broadcast("outbound_cancelled", {})
+            await web_server.broadcast("call_cancelled", {})
+            await web_server.broadcast("state_update", web_server.get_current_state_dict())
 
         # Wait up to 3.0s for cellular call to fully clear in WinRT before returning to standby
         clear_wait = 0.0

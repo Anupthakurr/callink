@@ -178,11 +178,13 @@ function initTelemetryWebSocket() {
 
 function handleTelemetryMessage(msg) {
   if (msg.type === 'state_update') {
-    updateGatewayState(msg.state);
+    const stateObj = msg.state || (msg.data && msg.data.state ? msg.data.state : msg.data);
+    updateGatewayState(stateObj);
   } else if (msg.type === 'audio_levels' && msg.data) {
     renderAudioMeter('callerMeterBar', 'callerRmsVal', msg.data.caller_rms || 0);
     renderAudioMeter('aiMeterBar', 'aiRmsVal', msg.data.ai_rms || 0);
   } else if (msg.type === 'call_ringing') {
+    hideCallEndedBanner();
     const statusPill = document.getElementById('statusPill');
     const statusText = document.getElementById('statusText');
     if (statusPill && statusText) {
@@ -190,11 +192,19 @@ function handleTelemetryMessage(msg) {
       statusText.textContent = 'INCOMING CALL RINGING — PRE-WARMING AI...';
     }
   } else if (msg.type === 'call_cancelled') {
+    hideOutboundDialingBanner();
+    endLiveCallUI();
+    showCallEndedBanner('CELLULAR CALL CEASED / CANCELLED', 'Call ceased or was cancelled before pickup. Gateway returned to standby.');
     const statusPill = document.getElementById('statusPill');
     const statusText = document.getElementById('statusText');
     if (statusPill && statusText) {
       statusPill.className = 'status-pill status-standby';
-      statusText.textContent = 'STANDBY — WAITING FOR CALL';
+      statusText.textContent = 'CALL CANCELLED — STANDBY';
+      setTimeout(() => {
+        if (!appState.callActive) {
+          statusText.textContent = 'STANDBY — WAITING FOR CALL';
+        }
+      }, 4000);
     }
   } else if (msg.type === 'pong') {
     const rtt = Math.max(1, Math.round(performance.now() - (msg.t || 0)));
@@ -203,13 +213,32 @@ function handleTelemetryMessage(msg) {
       latencyDisplay.textContent = `${rtt}ms RTT (Live Telemetry)`;
     }
   } else if (msg.type === 'call_started') {
+    hideCallEndedBanner();
     startLiveCallUI(msg.data.call_id, msg.data.call_type || 'gsm');
   } else if (msg.type === 'outbound_dialing' && msg.data) {
+    hideCallEndedBanner();
     showOutboundDialingBanner(msg.data.outbound);
   } else if (msg.type === 'outbound_cancelled') {
     hideOutboundDialingBanner();
   } else if (msg.type === 'call_ended') {
-    endLiveCallUI(msg.data.metadata);
+    hideOutboundDialingBanner();
+    endLiveCallUI(msg.data ? msg.data.metadata : null);
+    const meta = msg.data?.metadata;
+    const dur = (meta && meta.duration_seconds !== undefined) ? ` (${meta.duration_seconds}s)` : '';
+    const recNotice = (meta && meta.wav_file) ? ` Recording saved (${meta.wav_file}).` : '';
+    showCallEndedBanner('CELLULAR CALL ENDED', `Call finished${dur}.${recNotice} Gateway returned to standby.`);
+    const statusPill = document.getElementById('statusPill');
+    const statusText = document.getElementById('statusText');
+    if (statusPill && statusText) {
+      statusPill.className = 'status-pill status-standby';
+      statusText.textContent = `CALL ENDED${dur} — STANDBY`;
+      setTimeout(() => {
+        if (!appState.callActive) {
+          statusText.textContent = 'STANDBY — WAITING FOR CALL';
+        }
+      }, 4000);
+    }
+
   } else if (msg.type === 'transcript_chunk' && msg.data) {
     appendLiveTranscriptChunk(msg.data.role, msg.data.text);
   } else if (msg.type === 'transcript_turn_complete' && msg.data) {
@@ -476,6 +505,8 @@ function endLiveCallUI(metadata) {
   appState.callActive = false;
   clearInterval(appState.callTimerInterval);
   finalizeLiveTranscriptTurn();
+
+  hideOutboundDialingBanner();
 
   const banner = document.getElementById('liveCallBanner');
   if (banner) banner.classList.add('hidden');
@@ -2034,6 +2065,33 @@ function hideOutboundDialingBanner() {
   if (banner) banner.classList.add('hidden');
 }
 
+let callEndedBannerTimer = null;
+
+function showCallEndedBanner(titleText, subtitleText) {
+  const banner = document.getElementById('callEndedBanner');
+  if (!banner) return;
+  const title = document.getElementById('bannerEndedTitle');
+  const sub = document.getElementById('bannerEndedSubtitle');
+  if (title && titleText) title.textContent = titleText;
+  if (sub && subtitleText) sub.textContent = subtitleText;
+  banner.classList.remove('hidden');
+
+  if (callEndedBannerTimer) clearTimeout(callEndedBannerTimer);
+  callEndedBannerTimer = setTimeout(() => {
+    hideCallEndedBanner();
+  }, 7000);
+}
+
+function hideCallEndedBanner() {
+  if (callEndedBannerTimer) clearTimeout(callEndedBannerTimer);
+  const banner = document.getElementById('callEndedBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+document.getElementById('btnDismissEndedBanner')?.addEventListener('click', () => {
+  hideCallEndedBanner();
+});
+
 function initOutboundDialer() {
   const form = document.getElementById('outboundDialForm');
   const phoneInput = document.getElementById('dialPhoneNumber');
@@ -2102,6 +2160,7 @@ function initOutboundDialer() {
     try {
       await fetch('/api/dial/cancel', { method: 'POST' });
       hideOutboundDialingBanner();
+      showCallEndedBanner('OUTBOUND CALL CANCELLED', 'Dialing was cancelled by user. Gateway returned to standby.');
       showDialNotice('Outbound call canceled.', 'success');
       fetchStatusPolling();
     } catch (err) {
