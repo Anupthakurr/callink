@@ -24,11 +24,64 @@ if sys.stderr is None:
 
 import json
 import time
+import threading
 import asyncio
+import collections
 import audioop
 import numpy as np
 from datetime import datetime
 from aiohttp import web, WSMsgType
+
+# Terminal log ring buffer for web console streaming
+MAX_TERMINAL_LOGS = 2000
+terminal_logs = collections.deque(maxlen=MAX_TERMINAL_LOGS)
+terminal_lock = threading.Lock()
+_global_web_server = None
+
+def add_terminal_log(text: str):
+    """Appends live console logs to the ring buffer and pushes them via WebSocket to active browser tabs."""
+    global _global_web_server
+    if not text:
+        return
+    lines = text.splitlines()
+    now_ts = time.time()
+    time_str = time.strftime("%H:%M:%S", time.localtime(now_ts))
+    formatted_entries = []
+    with terminal_lock:
+        for line in lines:
+            if not line:
+                continue
+            entry = {
+                "text": line,
+                "timestamp": now_ts,
+                "time_str": time_str
+            }
+            terminal_logs.append(entry)
+            formatted_entries.append(entry)
+
+    if _global_web_server and _global_web_server.loop and _global_web_server.ws_clients and formatted_entries:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _global_web_server.broadcast_terminal_logs(formatted_entries),
+                _global_web_server.loop
+            )
+        except Exception:
+            pass
+
+def is_pc_voip_call_active() -> bool:
+    """Detects if a PC desktop VoIP application (WhatsApp, Teams, Skype, Zoom, Telegram)
+    is actively ringing or in a call on the computer's soundcard, so Callink can ignore it
+    and ensure it only engages for genuine cellular SIM calls from the paired phone."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            p = s.Process
+            if p and any(app in p.name().lower() for app in ["whatsapp", "telegram", "skype", "teams", "zoom"]):
+                if s.State == 1:  # AudioSessionStateActive
+                    return True
+    except Exception:
+        pass
+    return False
 
 from call_recorder import (
     CallRecorder,
@@ -59,114 +112,98 @@ def clean_device_name(name: str) -> str:
         return f"{base} ({alias})"
     return base
 
-_bt_cache = {"timestamp": 0.0, "connected_names": set()}
+_hw_cache = {
+    "timestamp": 0.0,
+    "connected": False,
+    "in_name": None,
+    "out_name": None,
+    "alias": "",
+    "in_call": False
+}
 
-def get_live_connected_bluetooth() -> set:
-    """
-    Checks whether Windows Bluetooth radio is ON and queries
-    which paired Bluetooth devices are actively connected right now.
-    Cached for 1.5s to minimize CPU overhead.
-    """
-    global _bt_cache
-    now = time.time()
-    if now - _bt_cache["timestamp"] < 1.5:
-        return _bt_cache["connected_names"]
+def set_in_call_state(in_call: bool):
+    """Mutes hardware scanning during active calls to protect real-time audio threads."""
+    _hw_cache["in_call"] = in_call
 
-    connected_names = set()
+def probe_hardware_sync():
+    """Lightweight, non-blocking check of Bluetooth radio and HFP audio endpoints."""
     try:
-        import winrt.windows.devices.bluetooth as bt
-        import winrt.windows.devices.radios as radios
-        import winrt.windows.devices.enumeration as enum
-        import concurrent.futures
+        radio_on = True
+        try:
+            import winrt.windows.devices.bluetooth as bt
+            import winrt.windows.devices.radios as radios
 
-        async def _query():
-            try:
+            async def _check_radio():
                 adapter = await bt.BluetoothAdapter.get_default_async()
-                if not adapter:
-                    return set()
-                radio = await adapter.get_radio_async()
-                if not radio or radio.state != radios.RadioState.ON:
-                    return set()
-            except Exception:
-                pass
+                if adapter:
+                    radio = await adapter.get_radio_async()
+                    return radio and radio.state == radios.RadioState.ON
+                return False
 
-            names = set()
-            try:
-                dev_infos = await enum.DeviceInformation.find_all_async()
-                macs = set()
-                for info in dev_infos:
-                    if 'Dev_' in info.id or 'DEV_' in info.id:
-                        m = re.search(r'Dev_([0-9a-fA-F]{12})', info.id, re.IGNORECASE)
-                        if m:
-                            macs.add(int(m.group(1), 16))
-                for mac in macs:
-                    try:
-                        dev = await bt.BluetoothDevice.from_bluetooth_address_async(mac)
-                        if dev and dev.connection_status == bt.BluetoothConnectionStatus.CONNECTED:
-                            names.add(dev.name.lower().strip())
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            return names
+            loop = asyncio.new_event_loop()
+            radio_on = loop.run_until_complete(_check_radio())
+            loop.close()
+        except Exception:
+            radio_on = True
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            connected_names = ex.submit(asyncio.run, _query()).result(timeout=3.0)
-        _bt_cache["timestamp"] = now
-        _bt_cache["connected_names"] = connected_names
-    except Exception as e:
-        if now - _bt_cache["timestamp"] > 5.0:
-            _bt_cache["timestamp"] = now
-            _bt_cache["connected_names"] = set()
-    return _bt_cache["connected_names"]
-
-def check_hfp_hardware():
-    try:
-        live_bt = get_live_connected_bluetooth()
-        # If Bluetooth radio is OFF or no phone/headset is connected:
-        if not live_bt:
-            return False, None, None
+        if not radio_on:
+            _hw_cache["connected"] = False
+            _hw_cache["in_name"] = None
+            _hw_cache["out_name"] = None
+            _hw_cache["alias"] = ""
+            return
 
         devices = sd.query_devices()
         in_name = None
         out_name = None
 
-        def extract_alias(name_str):
-            m = re.search(r';\(([^)]+)\)\s*\)?$', name_str)
-            if not m:
-                m = re.search(r'\(([^)]+)\)', name_str)
-            return m.group(1).lower().strip() if m else ""
-
-        # 1. First priority: Hands-Free HF Audio (Phone Link cellular bridge)
+        # 1. Primary: Hands-Free HF Audio (Phone Link cellular bridge)
         for d in devices:
             name = d.get("name", "")
             if "hands-free hf audio" in name.lower():
-                alias = extract_alias(name)
-                # Must match an actively connected Bluetooth device!
-                if alias and not any(bt_name in alias or alias in bt_name for bt_name in live_bt):
-                    continue
                 if d.get("max_input_channels", 0) > 0 and in_name is None:
                     in_name = clean_device_name(name)
                 if d.get("max_output_channels", 0) > 0 and out_name is None:
                     out_name = clean_device_name(name)
 
-        # 2. Second priority: any other hands-free headset that is connected
+        # 2. Secondary fallback: any other hands-free device
         if not (in_name and out_name):
             for d in devices:
                 name = d.get("name", "")
                 if "hands-free" in name.lower():
-                    alias = extract_alias(name)
-                    if alias and not any(bt_name in alias or alias in bt_name for bt_name in live_bt):
-                        continue
                     if d.get("max_input_channels", 0) > 0 and in_name is None:
                         in_name = clean_device_name(name)
                     if d.get("max_output_channels", 0) > 0 and out_name is None:
                         out_name = clean_device_name(name)
 
         connected = (in_name is not None and out_name is not None)
-        return connected, in_name, out_name
+        _hw_cache["connected"] = connected
+        _hw_cache["in_name"] = in_name
+        _hw_cache["out_name"] = out_name
+
+        alias = ""
+        if in_name and "(" in in_name and ")" in in_name:
+            m = re.search(r'\(([^)]+)\)', in_name)
+            if m:
+                alias = m.group(1).strip()
+        _hw_cache["alias"] = alias
     except Exception:
-        return False, None, None
+        pass
+
+def _hardware_monitor_worker():
+    while True:
+        time.sleep(4.0)
+        if _hw_cache.get("in_call", False):
+            continue
+        probe_hardware_sync()
+
+# Initial probe and background monitoring daemon
+probe_hardware_sync()
+_monitor_thread = threading.Thread(target=_hardware_monitor_worker, daemon=True, name="HfpHardwareMonitor")
+_monitor_thread.start()
+
+def check_hfp_hardware():
+    return _hw_cache["connected"], _hw_cache["in_name"], _hw_cache["out_name"]
 
 # pip install google-genai
 from google import genai
@@ -233,6 +270,10 @@ class WebGatewayServer:
         self.app = web.Application()
         self.runner = None
         self.site = None
+        self.loop = None
+
+        global _global_web_server
+        _global_web_server = self
 
         self.ws_clients = set()
         self.browser_sessions = {}
@@ -287,6 +328,9 @@ class WebGatewayServer:
             winrt_available = True
             phone_active = PhoneCallManager.get_is_call_active()
             phone_incoming = PhoneCallManager.get_is_call_incoming()
+            if is_pc_voip_call_active():
+                phone_active = False
+                phone_incoming = False
         except Exception:
             pass
 
@@ -319,6 +363,8 @@ class WebGatewayServer:
         self.app.router.add_get("/api/settings", self.handle_get_settings)
         self.app.router.add_post("/api/settings", self.handle_post_settings)
         self.app.router.add_post("/api/shutdown", self.handle_post_shutdown)
+        self.app.router.add_get("/api/logs", self.handle_get_logs)
+        self.app.router.add_post("/api/logs/clear", self.handle_clear_logs)
 
         # WebSocket Routes
         self.app.router.add_get("/ws/telemetry", self.handle_ws_telemetry)
@@ -405,6 +451,30 @@ class WebGatewayServer:
         asyncio.create_task(_delayed_kill())
         return web.json_response({"success": True, "message": "Callink Gateway is stopping..."})
 
+    async def handle_get_logs(self, request):
+        with terminal_lock:
+            logs = list(terminal_logs)
+        return web.json_response({"logs": logs})
+
+    async def handle_clear_logs(self, request):
+        with terminal_lock:
+            terminal_logs.clear()
+        await self.broadcast("terminal_logs_cleared", {})
+        return web.json_response({"success": True})
+
+    async def broadcast_terminal_logs(self, entries: list):
+        if not self.ws_clients:
+            return
+        payload = json.dumps({"type": "terminal_logs", "entries": entries})
+        stale_clients = []
+        for client in list(self.ws_clients):
+            try:
+                await client.send_str(payload)
+            except Exception:
+                stale_clients.append(client)
+        for client in stale_clients:
+            self.ws_clients.discard(client)
+
     async def handle_ws_telemetry(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
@@ -417,6 +487,18 @@ class WebGatewayServer:
                 "type": "state_update",
                 "state": current_state
             })
+        except Exception:
+            pass
+
+        # Send initial terminal logs to new connection
+        try:
+            with terminal_lock:
+                initial_logs = list(terminal_logs)
+            if initial_logs:
+                await ws.send_json({
+                    "type": "init_terminal_logs",
+                    "entries": initial_logs
+                })
         except Exception:
             pass
 
@@ -439,6 +521,15 @@ class WebGatewayServer:
 
     async def broadcast(self, message_type: str, data: dict):
         """Broadcasts real-time events to all active dashboard browser tabs."""
+        if message_type in ("transcript", "transcript_turn_complete") and data.get("text"):
+            self.state.setdefault("live_transcripts", []).append({
+                "role": data.get("role", "model"),
+                "text": data.get("text", ""),
+                "timestamp": time.time()
+            })
+        elif message_type == "call_started":
+            self.state["live_transcripts"] = []
+
         if not self.ws_clients:
             return
         payload = json.dumps({"type": message_type, "data": data, "timestamp": time.time()})
@@ -454,6 +545,19 @@ class WebGatewayServer:
     def update_audio_levels(self, caller_rms: int, ai_rms: int):
         self.state["caller_rms"] = int(caller_rms)
         self.state["ai_rms"] = int(ai_rms)
+        now = time.time()
+        if self.ws_clients and (now - getattr(self, "_last_levels_broadcast", 0.0) >= 0.08):
+            self._last_levels_broadcast = now
+            msg = json.dumps({
+                "type": "audio_levels",
+                "data": {"caller_rms": int(caller_rms), "ai_rms": int(ai_rms)},
+                "timestamp": now
+            })
+            for client in list(self.ws_clients):
+                try:
+                    asyncio.create_task(client.send_str(msg))
+                except Exception:
+                    pass
 
     async def handle_ws_browser_call(self, request):
         """
@@ -494,7 +598,9 @@ class WebGatewayServer:
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
                 )
-            )
+            ),
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
         )
 
         stop_call_event = asyncio.Event()
@@ -522,8 +628,12 @@ class WebGatewayServer:
                 except Exception as e:
                     print(f"[Browser Call Greeting Error]: {e}")
 
+                current_caller_text = ""
+                current_ai_text = ""
+
                 async def browser_receiver():
                     """Receives Gemini Live audio and streams back to browser WebSocket."""
+                    nonlocal current_caller_text, current_ai_text
                     while not stop_call_event.is_set():
                         try:
                             async for response in session.receive():
@@ -535,16 +645,41 @@ class WebGatewayServer:
 
                                 if server_content.interrupted:
                                     recorder.add_event("barge_in")
+                                    if current_ai_text:
+                                        ai_interrupted = current_ai_text.strip()
+                                        if ai_interrupted:
+                                            recorder.add_transcript("model", ai_interrupted + " [interrupted]")
+                                            await ws.send_json({"type": "transcript_turn_complete", "role": "model", "text": ai_interrupted + " [interrupted]"})
+                                            await self.broadcast("transcript_turn_complete", {"role": "model", "text": ai_interrupted + " [interrupted]"})
+                                        current_ai_text = ""
                                     await ws.send_json({"type": "interrupted"})
                                     await self.broadcast("barge_in", {"call_id": recorder.call_id})
                                     continue
 
+                                # 1. Caller real-time speech transcription
+                                if server_content.input_transcription and server_content.input_transcription.text:
+                                    in_text = server_content.input_transcription.text
+                                    current_caller_text += in_text
+                                    await ws.send_json({"type": "transcript_chunk", "role": "caller", "text": in_text})
+                                    await self.broadcast("transcript_chunk", {"role": "caller", "text": in_text})
+
+                                # 2. Gemini AI speech synthesis transcription
+                                if server_content.output_transcription and server_content.output_transcription.text:
+                                    out_text = server_content.output_transcription.text
+                                    if current_caller_text:
+                                        final_caller = current_caller_text.strip()
+                                        if final_caller:
+                                            recorder.add_transcript("caller", final_caller)
+                                            await ws.send_json({"type": "transcript_turn_complete", "role": "caller", "text": final_caller})
+                                            await self.broadcast("transcript_turn_complete", {"role": "caller", "text": final_caller})
+                                        current_caller_text = ""
+
+                                    current_ai_text += out_text
+                                    await ws.send_json({"type": "transcript_chunk", "role": "model", "text": out_text})
+                                    await self.broadcast("transcript_chunk", {"role": "model", "text": out_text})
+
                                 if server_content.model_turn:
                                     for part in server_content.model_turn.parts:
-                                        if part.text:
-                                            recorder.add_transcript("model", part.text)
-                                            await ws.send_json({"type": "transcript", "role": "model", "text": part.text})
-                                            await self.broadcast("transcript", {"role": "model", "text": part.text})
                                         if part.inline_data and part.inline_data.data:
                                             raw_audio_24k = part.inline_data.data
                                             ai_rms = audioop.rms(raw_audio_24k, 2)
@@ -560,6 +695,20 @@ class WebGatewayServer:
                                             await ws.send_bytes(raw_audio_24k)
 
                                 if server_content.turn_complete:
+                                    if current_caller_text:
+                                        final_caller = current_caller_text.strip()
+                                        if final_caller:
+                                            recorder.add_transcript("caller", final_caller)
+                                            await ws.send_json({"type": "transcript_turn_complete", "role": "caller", "text": final_caller})
+                                            await self.broadcast("transcript_turn_complete", {"role": "caller", "text": final_caller})
+                                        current_caller_text = ""
+                                    if current_ai_text:
+                                        final_ai = current_ai_text.strip()
+                                        if final_ai:
+                                            recorder.add_transcript("model", final_ai)
+                                            await ws.send_json({"type": "transcript_turn_complete", "role": "model", "text": final_ai})
+                                            await self.broadcast("transcript_turn_complete", {"role": "model", "text": final_ai})
+                                        current_ai_text = ""
                                     await ws.send_json({"type": "turn_complete"})
 
                         except asyncio.CancelledError:
@@ -619,6 +768,10 @@ class WebGatewayServer:
 
     async def start(self):
         """Starts the AIOHTTP server asynchronously."""
+        self.loop = asyncio.get_running_loop()
+        global _global_web_server
+        _global_web_server = self
+
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
 

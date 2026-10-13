@@ -1547,3 +1547,177 @@ body {
     align-items: stretch;
   }
 }
+
+/* ==========================================================================
+   Terminal / System Console View
+   ========================================================================== */
+
+.terminal-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 135px);
+  min-height: 520px;
+}
+
+.terminal-window {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background: #080c14;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 20px 48px -12px rgba(0, 0, 0, 0.75);
+  overflow: hidden;
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: #0d1322;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  user-select: none;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.terminal-dots {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-red { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.4); }
+.dot-yellow { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
+.dot-green { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.4); }
+
+.terminal-title {
+  margin-left: 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.terminal-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.terminal-status-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-emerald);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  padding: 0.2rem 0.65rem;
+  border-radius: var(--radius-full);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.terminal-status-live .dot-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
+  animation: pulseLogo 1.5s infinite;
+}
+
+.terminal-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.terminal-checkbox-label input {
+  cursor: pointer;
+  accent-color: var(--accent-indigo);
+}
+
+.btn-danger-ghost:hover {
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.12) !important;
+}
+
+.terminal-screen {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: #e2e8f0;
+  background: #05080f;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.terminal-screen::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-screen::-webkit-scrollbar-track {
+  background: #070a12;
+}
+
+.terminal-screen::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.terminal-screen::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.terminal-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.15rem;
+  font-family: var(--font-mono);
+}
+
+.term-time {
+  color: #475569;
+  font-size: 0.76rem;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.term-text {
+  flex: 1;
+  color: #cbd5e1;
+}
+
+/* Syntax / Keyword Tag Highlights */
+.term-tag-telephony { color: #34d399; font-weight: 600; }
+.term-tag-prewarm { color: #38bdf8; font-weight: 600; }
+.term-tag-audiolink { color: #818cf8; font-weight: 600; }
+.term-tag-gateway { color: #a78bfa; font-weight: 600; }
+.term-tag-error { color: #f87171; font-weight: 700; background: rgba(248, 113, 113, 0.12); padding: 0 4px; border-radius: 4px; }
+.term-tag-warn { color: #fbbf24; font-weight: 600; }
+.term-tag-bargein { color: #f59e0b; font-weight: 700; }
+.term-tag-divider { color: #334155; }
+.term-tag-header { color: #67e8f9; font-weight: 700; }
+.term-tag-prompt { color: #ec4899; }
+

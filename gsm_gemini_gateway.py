@@ -9,29 +9,52 @@ _log_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else os.get
 _log_file = os.path.join(_log_dir, "callink_runtime.log")
 
 class TeeLogger:
-    def __init__(self):
+    def __init__(self, orig_stream=None):
+        self.orig_stream = orig_stream
         try:
             self.f = open(_log_file, "a", encoding="utf-8")
         except Exception:
             self.f = None
+
     def write(self, text):
+        if not text:
+            return
+        if self.orig_stream:
+            try:
+                self.orig_stream.write(text)
+                self.orig_stream.flush()
+            except Exception:
+                pass
         if self.f:
             try:
                 self.f.write(text)
                 self.f.flush()
             except Exception:
                 pass
+        try:
+            from web_server import add_terminal_log
+            add_terminal_log(text)
+        except Exception:
+            pass
+
     def flush(self):
+        if self.orig_stream:
+            try: self.orig_stream.flush()
+            except Exception: pass
         if self.f:
             try: self.f.flush()
             except Exception: pass
-    def reconfigure(self, **kwargs): pass
 
-logger = TeeLogger()
-if sys.stdout is None:
-    sys.stdout = logger
-if sys.stderr is None:
-    sys.stderr = logger
+    def reconfigure(self, **kwargs):
+        if self.orig_stream and hasattr(self.orig_stream, "reconfigure"):
+            try: self.orig_stream.reconfigure(**kwargs)
+            except Exception: pass
+
+_orig_stdout = sys.stdout
+_orig_stderr = sys.stderr
+logger = TeeLogger(_orig_stdout)
+sys.stdout = logger
+sys.stderr = logger
 
 try:
     if hasattr(sys.stdout, "reconfigure"):
@@ -170,41 +193,85 @@ def allow_sleep():
         pass
 
 
-def find_hfp_devices(quiet: bool = False):
-    """Discovers Windows Bluetooth Hands-Free HF Audio input and output devices."""
+def is_pc_voip_call_active() -> bool:
+    """Detects if a PC desktop VoIP application (WhatsApp, Teams, Skype, Zoom, Telegram)
+    is actively ringing or in a call on the computer's soundcard, so Callink can ignore it
+    and ensure it only engages for genuine cellular SIM calls from the paired phone."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            p = s.Process
+            if p and any(app in p.name().lower() for app in ["whatsapp", "telegram", "skype", "teams", "zoom"]):
+                if s.State == 1:  # AudioSessionStateActive
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
+    """Discovers Windows Bluetooth Hands-Free HF Audio input and output devices.
+    Prioritizes WASAPI endpoints when available, falling back smoothly to WDM-KS."""
+    if force_refresh:
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception:
+            pass
+
     try:
         devices = sd.query_devices()
+        apis = sd.query_hostapis()
     except Exception as e:
         if not quiet:
             print(f"[Audio Error] Could not query audio devices: {e}")
         return None, None
 
-    input_device = None
-    output_device = None
+    # Host API preference ranking: WASAPI (most stable) > DirectSound > MME > WDM-KS
+    api_ranks = {"windows wasapi": 4, "windows directsound": 3, "mme": 2, "windows wdm-ks": 1}
+
+    def get_api_score(dev):
+        hostapi_idx = dev.get("hostapi", -1)
+        if 0 <= hostapi_idx < len(apis):
+            api_name = apis[hostapi_idx].get("name", "").lower()
+            return api_ranks.get(api_name, 0)
+        return 0
+
+    best_in_idx = None
+    best_in_score = -1
+
+    best_out_idx = None
+    best_out_score = -1
 
     for i, device in enumerate(devices):
         name = device["name"].lower()
-
-        # Windows Bluetooth Hands-Free HF Audio endpoint
-        if "hands-free hf audio" not in name:
+        if "hands-free" not in name and "handsfree" not in name:
             continue
 
-        if device["max_input_channels"] > 0 and input_device is None:
-            input_device = i
+        # Score based on exact name match & host API stability
+        name_score = 10 if "hands-free hf audio" in name else 5
+        score = name_score + get_api_score(device)
 
-        if device["max_output_channels"] > 0 and output_device is None:
-            output_device = i
+        if device["max_input_channels"] > 0 and score > best_in_score:
+            best_in_idx = i
+            best_in_score = score
 
-    if input_device is None or output_device is None:
+        if device["max_output_channels"] > 0 and score > best_out_score:
+            best_out_idx = i
+            best_out_score = score
+
+    if best_in_idx is None or best_out_idx is None:
         if not quiet:
             print("[INFO] Bluetooth HFP device not yet detected. Ready for phone pairing via Phone Link.")
         return None, None
 
     if not quiet:
-        print(f"HFP INPUT  : [{input_device}] {devices[input_device]['name']}")
-        print(f"HFP OUTPUT : [{output_device}] {devices[output_device]['name']}")
+        api_in = apis[devices[best_in_idx]["hostapi"]]["name"] if 0 <= devices[best_in_idx]["hostapi"] < len(apis) else "?"
+        api_out = apis[devices[best_out_idx]["hostapi"]]["name"] if 0 <= devices[best_out_idx]["hostapi"] < len(apis) else "?"
+        print(f"HFP INPUT  : [{best_in_idx}] {devices[best_in_idx]['name']} ({api_in})")
+        print(f"HFP OUTPUT : [{best_out_idx}] {devices[best_out_idx]['name']} ({api_out})")
 
-    return input_device, output_device
+    return best_in_idx, best_out_idx
 
 
 HFP_RATE = 16000       # native rate of the Windows HFP endpoint
@@ -219,20 +286,18 @@ GEMINI_OUT_RATE = 24000
 GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 
 # Barge-in VAD parameters (for client-side speech detection while AI is playing)
-VAD_RMS_THRESHOLD = 3600
-VAD_TRIGGER_CONSECUTIVE = 5       # ~100ms of sustained speech above threshold
-VAD_INITIAL_GRACE_PERIOD = 0.35   # 350ms grace period after AI speech starts before barge-in triggers
+VAD_RMS_THRESHOLD = 4200
+VAD_TRIGGER_CONSECUTIVE = 8       # ~160ms of sustained speech above threshold
+VAD_INITIAL_GRACE_PERIOD = 0.60   # 600ms grace period after AI speech starts before client barge-in triggers
 
 
 class HFPBridge:
-    """Reads/writes the HFP device and exposes two queues:
-    to_ai (caller's voice, for Gemini) and
-    to_hfp (AI's synthesized reply, played into the phone call).
-    Also tracks playback state for real-time dual-track conversation recording."""
+    """Reads/writes the Windows Bluetooth HFP device.
+    Features a high-resilience byte-level FIFO playback buffer with Jitter Prebuffering
+    to eliminate audio stuttering, clicks, and dropouts over Bluetooth SCO."""
 
     def __init__(self, in_dev=None, out_dev=None):
         self.to_ai = queue.Queue(maxsize=300)
-        self.to_hfp = queue.Queue(maxsize=1000)
 
         self.input_device = in_dev
         self.output_device = out_dev
@@ -248,6 +313,13 @@ class HFPBridge:
         self.last_interrupted_at = 0.0
         self.last_played_chunk = b"\x00" * 640
 
+        # High-resilience byte-level playback buffer with Jitter Prebuffering
+        self._playback_lock = threading.Lock()
+        self._playback_bytes = bytearray()
+        self._is_buffering = True
+        # 120ms pre-buffer cushion (16000 samples/sec * 2 bytes/sample * 0.12s = 3840 bytes)
+        self.prebuffer_target_bytes = 3840
+
     def input_callback(self, indata, frames, time_info, status):
         try:
             pcm16 = indata[:, 0].tobytes()
@@ -259,46 +331,84 @@ class HFPBridge:
         except Exception as e:
             print("HFP INPUT CALLBACK ERROR:", e)
 
+    def push_playback_audio(self, pcm16: bytes):
+        """Append synthesized AI audio to the playback buffer and disengage buffering once threshold is met."""
+        if not pcm16:
+            return
+        with self._playback_lock:
+            self._playback_bytes.extend(pcm16)
+            if self._is_buffering and len(self._playback_bytes) >= self.prebuffer_target_bytes:
+                self._is_buffering = False
+                if self.playback_started_at is None:
+                    self.playback_started_at = time.time()
+
+    def flush_turn_playback(self):
+        """Called when Gemini signals turn_complete to ensure remaining buffered audio plays even if under threshold."""
+        with self._playback_lock:
+            if len(self._playback_bytes) > 0:
+                self._is_buffering = False
+                if self.playback_started_at is None:
+                    self.playback_started_at = time.time()
+
+    def has_pending_playback(self) -> bool:
+        with self._playback_lock:
+            return len(self._playback_bytes) > 0 or not self._is_buffering
+
     def output_callback(self, outdata, frames, time_info, status):
         try:
             outdata.fill(0)
+            bytes_needed = frames * 2  # 16-bit mono = 2 bytes per frame
 
-            try:
-                pcm16 = self.to_hfp.get_nowait()
-                self.last_played_chunk = pcm16
-            except queue.Empty:
-                self.playback_started_at = None
-                self.last_played_chunk = b"\x00" * 640
-                return
+            with self._playback_lock:
+                # If still collecting initial jitter cushion, output silence
+                if self._is_buffering:
+                    self.last_played_chunk = b"\x00" * 640
+                    return
 
-            if self.playback_started_at is None:
-                self.playback_started_at = time.time()
+                # If queue has completely drained, reset buffering for next utterance
+                if len(self._playback_bytes) == 0:
+                    self._is_buffering = True
+                    self.playback_started_at = None
+                    self.last_played_chunk = b"\x00" * 640
+                    return
 
-            samples = len(pcm16) // 2
-            data = memoryview(pcm16).cast("h")
-            count = min(samples, frames)
+                if self.playback_started_at is None:
+                    self.playback_started_at = time.time()
 
-            if count > 0:
-                outdata[:count, 0] = data[:count]
-                self.total_output_frames += 1
+                bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
+                raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
+                del self._playback_bytes[:bytes_to_pull]
+
+                # If buffer is now empty, re-arm buffering
+                if len(self._playback_bytes) == 0:
+                    self._is_buffering = True
+                    self.playback_started_at = None
+
+            samples = len(raw_chunk) // 2
+            data = memoryview(raw_chunk).cast("h")
+            outdata[:samples, 0] = data
+            self.total_output_frames += samples
+
+            # Keep latest 640 bytes for RMS telemetry and stereo recorder
+            if len(raw_chunk) >= 640:
+                self.last_played_chunk = raw_chunk[:640]
+            else:
+                self.last_played_chunk = raw_chunk + b"\x00" * (640 - len(raw_chunk))
 
         except Exception as e:
             print("HFP OUTPUT CALLBACK ERROR:", e)
 
     def clear_playback(self):
-        """Immediately drain pending audio from to_hfp for instantaneous barge-in."""
+        """Immediately drain pending audio from playback buffer for instantaneous barge-in."""
         self.last_interrupted_at = time.time()
         self.playback_started_at = None
         self.last_played_chunk = b"\x00" * 640
-        drained_chunks = 0
-        while not self.to_hfp.empty():
-            try:
-                self.to_hfp.get_nowait()
-                drained_chunks += 1
-            except queue.Empty:
-                break
-        if drained_chunks > 0:
-            print(f"[BARGE-IN] Drained {drained_chunks} pending audio chunks from playback queue.")
+        with self._playback_lock:
+            drained_bytes = len(self._playback_bytes)
+            self._playback_bytes.clear()
+            self._is_buffering = True
+        if drained_bytes > 0:
+            print(f"[BARGE-IN] Drained {drained_bytes} pending audio bytes from playback buffer.")
 
     def is_healthy(self) -> bool:
         """Check whether both input and output streams exist and are active."""
@@ -309,51 +419,65 @@ class HFPBridge:
         except Exception:
             return False
 
-    def start(self):
-        # Dynamically discover endpoints if not provided
-        if self.input_device is None or self.output_device is None:
-            in_dev, out_dev = find_hfp_devices(quiet=True)
-            if in_dev is None or out_dev is None:
-                raise RuntimeError(
-                    "Bluetooth Hands-Free (HFP) endpoint not found. "
-                    "Please ensure phone is paired via Microsoft Phone Link."
+    def start(self, max_retries: int = 10, retry_delay: float = 0.35):
+        for attempt in range(1, max_retries + 1):
+            if self.input_device is None or self.output_device is None:
+                in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=(attempt > 1))
+                if in_dev is None or out_dev is None:
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        continue
+                    raise RuntimeError(
+                        "Bluetooth Hands-Free (HFP) endpoint not found. "
+                        "Please ensure phone is paired via Microsoft Phone Link."
+                    )
+                self.input_device = in_dev
+                self.output_device = out_dev
+
+            try:
+                print(f"Opening HFP input [{self.input_device}]...")
+                self.input_stream = sd.InputStream(
+                    device=self.input_device,
+                    samplerate=HFP_RATE,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=HFP_BLOCK,
+                    callback=self.input_callback,
                 )
-            self.input_device = in_dev
-            self.output_device = out_dev
+                print("HFP input opened.")
 
-        try:
-            print(f"Opening HFP input [{self.input_device}]...")
-            self.input_stream = sd.InputStream(
-                device=self.input_device,
-                samplerate=HFP_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=HFP_BLOCK,
-                callback=self.input_callback,
-            )
-            print("HFP input opened.")
+                print(f"Opening HFP output [{self.output_device}]...")
+                self.output_stream = sd.OutputStream(
+                    device=self.output_device,
+                    samplerate=HFP_RATE,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=HFP_BLOCK,
+                    callback=self.output_callback,
+                )
+                print("HFP output opened.")
 
-            print(f"Opening HFP output [{self.output_device}]...")
-            self.output_stream = sd.OutputStream(
-                device=self.output_device,
-                samplerate=HFP_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=HFP_BLOCK,
-                callback=self.output_callback,
-            )
-            print("HFP output opened.")
+                self.input_stream.start()
+                print("HFP input stream started.")
 
-            self.input_stream.start()
-            print("HFP input stream started.")
+                self.output_stream.start()
+                print("HFP output stream started.")
 
-            self.output_stream.start()
-            print("HFP output stream started.")
-
-            print("HFP audio bridge running.\n")
-        except Exception:
-            self.stop()
-            raise
+                print("HFP audio bridge running.\n")
+                return
+            except Exception as e:
+                self.stop()
+                if attempt < max_retries:
+                    print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    # Re-verify device indices in case Windows adjusted endpoints upon SCO connect
+                    in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=True)
+                    if in_dev is not None and out_dev is not None:
+                        self.input_device = in_dev
+                        self.output_device = out_dev
+                else:
+                    print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
+                    raise
 
     def stop(self):
         if self.input_stream:
@@ -373,6 +497,74 @@ class HFPBridge:
             self.output_stream = None
 
 
+class GeminiPrewarmer:
+    """Pre-connects Gemini Live API session while the phone is ringing.
+    Ensures zero connect latency when the caller or phone answers."""
+
+    def __init__(self, api_key: str, model: str, config: types.LiveConnectConfig):
+        self.api_key = api_key
+        self.model = model
+        self.config = config
+        self.client = genai.Client(api_key=api_key)
+        self.session = None
+        self._connect_task = None
+        self._ready_event = asyncio.Event()
+        self._release_event = asyncio.Event()
+        self._is_connecting = False
+
+    def is_active(self) -> bool:
+        return self._is_connecting
+
+    def is_ready(self) -> bool:
+        return self._ready_event.is_set() and self.session is not None
+
+    def start_prewarm(self):
+        if self._is_connecting:
+            return
+        self._is_connecting = True
+        self._ready_event.clear()
+        self._release_event.clear()
+        self._connect_task = asyncio.create_task(self._worker())
+
+    async def _worker(self):
+        try:
+            print("[Pre-warm] Incoming call detected — pre-connecting Gemini Live API in background...")
+            async with self.client.aio.live.connect(model=self.model, config=self.config) as session:
+                self.session = session
+                self._ready_event.set()
+                print("[Pre-warm] Gemini Live session pre-connected & ready for call pickup!")
+                await self._release_event.wait()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Pre-warm Error]: {e}")
+        finally:
+            self.session = None
+            self._ready_event.clear()
+            self._is_connecting = False
+
+    async def acquire_session(self, timeout: float = 2.5):
+        """Wait if currently connecting, or return existing ready session."""
+        if not self._is_connecting:
+            return None
+        try:
+            await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+            return self.session
+        except asyncio.TimeoutError:
+            print("[Pre-warm] Pre-warmed session timed out. Connecting fresh session.")
+            return None
+
+    async def release(self):
+        self._release_event.set()
+        if self._connect_task and not self._connect_task.done():
+            self._connect_task.cancel()
+            try:
+                await self._connect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._is_connecting = False
+
+
 def resample_for_hfp(pcm_24k: bytes, bridge: HFPBridge = None) -> bytes:
     """Gemini's output audio (24kHz) -> HFP playback rate (16kHz)."""
     state = bridge._out_resample_state if bridge else None
@@ -386,7 +578,8 @@ async def run_gemini_bridge(
     bridge: HFPBridge,
     stop_event: asyncio.Event,
     recorder: CallRecorder = None,
-    web_server: WebGatewayServer = None
+    web_server: WebGatewayServer = None,
+    prewarmer: GeminiPrewarmer = None
 ):
     """Owns the Gemini Live session for the duration of one call.
     Streams caller audio to Gemini, plays synthesized replies into phone call,
@@ -410,7 +603,9 @@ async def run_gemini_bridge(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
             )
-        )
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
     is_initial_connect = True
@@ -425,223 +620,308 @@ async def run_gemini_bridge(
 
         session_stop_event = asyncio.Event()
 
-        if is_initial_connect:
-            print("Connecting to Gemini Live API...")
-        else:
-            print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session...")
+        # Check if we have a pre-warmed session ready from incoming ring
+        active_session = None
+        if is_initial_connect and prewarmer and prewarmer.is_active():
+            print("[Gateway] Acquiring pre-warmed Gemini Live session...")
+            active_session = await prewarmer.acquire_session(timeout=2.0)
+            if active_session:
+                print("[Gateway] Pre-warmed session successfully acquired (zero connect latency)!")
 
-        try:
-            async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
-                print("Gemini Live session connected.")
-                print("AI Voice Gateway active.\n")
+        async def _run_session_pipeline(session):
+            nonlocal is_initial_connect
+            print("Gemini Live session connected & active.")
 
-                # Flush stale audio buffered in to_ai during connection
-                flushed = 0
-                while not bridge.to_ai.empty():
-                    try:
-                        bridge.to_ai.get_nowait()
-                        flushed += 1
-                    except queue.Empty:
-                        break
-                if flushed > 0:
-                    print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
+            # Flush stale audio buffered in to_ai during connection
+            flushed = 0
+            while not bridge.to_ai.empty():
+                try:
+                    bridge.to_ai.get_nowait()
+                    flushed += 1
+                except queue.Empty:
+                    break
+            if flushed > 0:
+                print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
 
-                # Proactively prompt Gemini to greet caller on pickup
-                if is_initial_connect:
-                    print("[Gateway] Requesting immediate AI greeting...")
-                    try:
-                        await session.send_client_content(
-                            turns=types.Content(
-                                role="user",
-                                parts=[
-                                    types.Part(
-                                        text=(
-                                            "[A caller has just connected to the phone call. "
-                                            "Immediately greet them warmly and concisely in one short sentence, "
-                                            "such as 'Hello! Thanks for calling, how can I help you today?']"
-                                        )
+            # Proactively prompt Gemini to greet caller on pickup
+            if is_initial_connect:
+                print("[Gateway] Requesting immediate AI greeting...")
+                try:
+                    await session.send_client_content(
+                        turns=types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(
+                                    text=(
+                                        "[A caller has just connected to the phone call. "
+                                        "Immediately greet them warmly and concisely in one short sentence, "
+                                        "such as 'Hello! Thanks for calling, how can I help you today?']"
                                     )
-                                ],
-                            ),
-                            turn_complete=True,
+                                )
+                            ],
+                        ),
+                        turn_complete=True,
+                    )
+                except Exception as e:
+                    print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
+                is_initial_connect = False
+            else:
+                print("[Gateway] Seamlessly reconnected mid-call! Continuing conversation.")
+
+            current_caller_text = ""
+            current_ai_text = ""
+
+            async def sender():
+                """Drain caller audio, write stereo recording, stream to Gemini, monitor barge-in."""
+                nonlocal current_ai_text
+                consecutive_speech_chunks = 0
+                sent_chunks = 0
+                zero_chunks = 0
+                last_report = time.time()
+                latest_rms = 0
+
+                while not stop_event.is_set() and not session_stop_event.is_set():
+                    now = time.time()
+                    if now - last_report >= 2.0:
+                        last_report = now
+
+                    try:
+                        pcm16 = bridge.to_ai.get_nowait()
+                    except queue.Empty:
+                        await asyncio.sleep(0.005)
+                        continue
+                    except Exception:
+                        continue
+
+                    latest_rms = audioop.rms(pcm16, 2)
+                    current_ai_chunk = bridge.last_played_chunk
+                    ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
+
+                    # Update web platform telemetry meters
+                    if web_server:
+                        web_server.update_audio_levels(latest_rms, ai_rms)
+
+                    # Write dual-track stereo block (Left: Caller, Right: AI)
+                    if recorder:
+                        recorder.write_stereo_block(pcm16, current_ai_chunk)
+
+                    if not any(pcm16):
+                        zero_chunks += 1
+
+                    # Client-side barge-in detection:
+                    if bridge.has_pending_playback():
+                        ai_speaking_sec = (
+                            time.time() - bridge.playback_started_at
+                            if bridge.playback_started_at is not None
+                            else 0.0
                         )
-                    except Exception as e:
-                        print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
-                    is_initial_connect = False
-                else:
-                    print("[Gateway] Seamlessly reconnected mid-call! Continuing conversation.")
-
-                async def sender():
-                    """Drain caller audio, write stereo recording, stream to Gemini, monitor barge-in."""
-                    consecutive_speech_chunks = 0
-                    sent_chunks = 0
-                    zero_chunks = 0
-                    last_report = time.time()
-                    latest_rms = 0
-
-                    while not stop_event.is_set() and not session_stop_event.is_set():
-                        now = time.time()
-                        if now - last_report >= 2.0:
-                            last_report = now
-
-                        try:
-                            pcm16 = bridge.to_ai.get_nowait()
-                        except queue.Empty:
-                            await asyncio.sleep(0.005)
-                            continue
-                        except Exception:
-                            continue
-
-                        latest_rms = audioop.rms(pcm16, 2)
-                        current_ai_chunk = bridge.last_played_chunk
-                        ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
-
-                        # Update web platform telemetry meters
-                        if web_server:
-                            web_server.update_audio_levels(latest_rms, ai_rms)
-
-                        # Write dual-track stereo block (Left: Caller, Right: AI)
-                        if recorder:
-                            recorder.write_stereo_block(pcm16, current_ai_chunk)
-
-                        if not any(pcm16):
-                            zero_chunks += 1
-
-                        # Client-side barge-in detection:
-                        if not bridge.to_hfp.empty():
-                            ai_speaking_sec = (
-                                time.time() - bridge.playback_started_at
-                                if bridge.playback_started_at is not None
-                                else 0.0
-                            )
-                            if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
-                                if latest_rms > vad_threshold:
-                                    consecutive_speech_chunks += 1
-                                    if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
-                                        print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
-                                        bridge.clear_playback()
-                                        if recorder:
-                                            recorder.add_event("barge_in", {"rms": latest_rms})
-                                        if web_server:
-                                            asyncio.create_task(web_server.broadcast("barge_in", {"rms": latest_rms}))
-                                        consecutive_speech_chunks = 0
-                                else:
+                        if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
+                            if latest_rms > vad_threshold:
+                                consecutive_speech_chunks += 1
+                                if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
+                                    print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
+                                    bridge.clear_playback()
+                                    if current_ai_text:
+                                        ai_interrupted = current_ai_text.strip()
+                                        if ai_interrupted:
+                                            if recorder:
+                                                recorder.add_transcript("model", ai_interrupted + " [interrupted]")
+                                            if web_server:
+                                                asyncio.create_task(web_server.broadcast("transcript_turn_complete", {"role": "model", "text": ai_interrupted + " [interrupted]"}))
+                                        current_ai_text = ""
+                                    if recorder:
+                                        recorder.add_event("barge_in", {"rms": latest_rms})
+                                    if web_server:
+                                        asyncio.create_task(web_server.broadcast("barge_in", {"rms": latest_rms}))
                                     consecutive_speech_chunks = 0
                             else:
                                 consecutive_speech_chunks = 0
                         else:
                             consecutive_speech_chunks = 0
+                    else:
+                        consecutive_speech_chunks = 0
 
-                        try:
-                            await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=pcm16,
-                                    mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
-                                )
+                    try:
+                        await session.send_realtime_input(
+                            audio=types.Blob(
+                                data=pcm16,
+                                mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
                             )
-                            sent_chunks += 1
-                        except Exception as e:
-                            if not stop_event.is_set() and not session_stop_event.is_set():
-                                print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
-                            session_stop_event.set()
-                            break
+                        )
+                        sent_chunks += 1
+                    except Exception as e:
+                        if not stop_event.is_set() and not session_stop_event.is_set():
+                            print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
+                        session_stop_event.set()
+                        break
 
-                async def receiver():
-                    """Pull Gemini's spoken response, record transcripts, resample and push to HFP."""
-                    leftover_bytes = bytearray()
-                    chunk_size = 640  # 320 samples @ 16kHz 16-bit mono = exactly HFP_BLOCK
+            async def receiver():
+                """Pull Gemini's spoken response, resample, push to jitter buffer, and stream transcripts."""
+                nonlocal current_caller_text, current_ai_text
+                while not stop_event.is_set() and not session_stop_event.is_set():
+                    try:
+                        async for response in session.receive():
+                            if stop_event.is_set() or session_stop_event.is_set():
+                                break
 
-                    while not stop_event.is_set() and not session_stop_event.is_set():
-                        try:
-                            async for response in session.receive():
-                                if stop_event.is_set() or session_stop_event.is_set():
-                                    break
+                            server_content = response.server_content
+                            if server_content is None:
+                                continue
 
-                                server_content = response.server_content
-                                if server_content is None:
-                                    continue
+                            # Server-side interruption (Gemini Live detected user speech)
+                            if server_content.interrupted:
+                                print("[BARGE-IN] Server signaled interruption! Clearing playback buffer.")
+                                bridge.clear_playback()
+                                bridge._out_resample_state = None
+                                if current_ai_text:
+                                    ai_interrupted = current_ai_text.strip()
+                                    if ai_interrupted:
+                                        print(f"[AI Transcript (Interrupted)]: {ai_interrupted}")
+                                        if recorder:
+                                            recorder.add_transcript("model", ai_interrupted + " [interrupted]")
+                                        if web_server:
+                                            await web_server.broadcast("transcript_turn_complete", {"role": "model", "text": ai_interrupted + " [interrupted]"})
+                                    current_ai_text = ""
+                                if recorder:
+                                    recorder.add_event("server_barge_in")
+                                if web_server:
+                                    await web_server.broadcast("barge_in", {"type": "server"})
+                                continue
 
-                                # Server-side interruption (Gemini Live detected user speech)
-                                if server_content.interrupted:
-                                    print("[BARGE-IN] Server signaled interruption! Clearing playback queue.")
-                                    bridge.clear_playback()
-                                    leftover_bytes.clear()
-                                    bridge._out_resample_state = None
-                                    if recorder:
-                                        recorder.add_event("server_barge_in")
-                                    if web_server:
-                                        await web_server.broadcast("barge_in", {"type": "server"})
-                                    continue
+                            # 1. Caller real-time speech transcription
+                            if server_content.input_transcription and server_content.input_transcription.text:
+                                in_text = server_content.input_transcription.text
+                                current_caller_text += in_text
+                                if web_server:
+                                    await web_server.broadcast("transcript_chunk", {
+                                        "role": "caller",
+                                        "text": in_text
+                                    })
 
-                                # Extract synthesized audio & text transcripts
+                            # 2. Gemini AI real-time speech synthesis transcription
+                            if server_content.output_transcription and server_content.output_transcription.text:
+                                out_text = server_content.output_transcription.text
+                                # If caller was previously speaking and now AI is replying, finalize caller turn
+                                if current_caller_text:
+                                    final_caller = current_caller_text.strip()
+                                    if final_caller:
+                                        print(f"[Caller Transcript]: {final_caller}")
+                                        if recorder:
+                                            recorder.add_transcript("caller", final_caller)
+                                        if web_server:
+                                            await web_server.broadcast("transcript_turn_complete", {
+                                                "role": "caller",
+                                                "text": final_caller
+                                            })
+                                    current_caller_text = ""
+
+                                current_ai_text += out_text
+                                if web_server:
+                                    await web_server.broadcast("transcript_chunk", {
+                                        "role": "model",
+                                        "text": out_text
+                                    })
+
+                            # Extract synthesized audio
+                            audio_data = None
+                            if server_content.model_turn:
+                                for part in server_content.model_turn.parts:
+                                    if part.inline_data and part.inline_data.data:
+                                        audio_data = part.inline_data.data
+                                        break
+
+                            # If an interruption recently occurred, drop remaining stale audio from that turn
+                            if time.time() - bridge.last_interrupted_at < 0.2:
                                 audio_data = None
-                                if server_content.model_turn:
-                                    for part in server_content.model_turn.parts:
-                                        if part.text:
-                                            print(f"[AI Transcript]: {part.text}")
-                                            if recorder:
-                                                recorder.add_transcript("model", part.text)
-                                            if web_server:
-                                                await web_server.broadcast("transcript", {"role": "model", "text": part.text})
-                                        if part.inline_data and part.inline_data.data:
-                                            audio_data = part.inline_data.data
-                                            break
 
-                                # If an interruption recently occurred, drop remaining stale audio from that turn
-                                if time.time() - bridge.last_interrupted_at < 0.3:
-                                    audio_data = None
-                                    leftover_bytes.clear()
+                            if audio_data is not None:
+                                pcm16_hfp = resample_for_hfp(audio_data, bridge)
+                                bridge.push_playback_audio(pcm16_hfp)
 
-                                if audio_data is not None:
-                                    pcm16_hfp = resample_for_hfp(audio_data, bridge)
-                                    leftover_bytes.extend(pcm16_hfp)
+                            # If turn completes, flush jitter buffer & finalize completed turns
+                            if server_content.turn_complete:
+                                bridge.flush_turn_playback()
+                                if current_caller_text:
+                                    final_caller = current_caller_text.strip()
+                                    if final_caller:
+                                        print(f"[Caller Transcript]: {final_caller}")
+                                        if recorder:
+                                            recorder.add_transcript("caller", final_caller)
+                                        if web_server:
+                                            await web_server.broadcast("transcript_turn_complete", {
+                                                "role": "caller",
+                                                "text": final_caller
+                                            })
+                                    current_caller_text = ""
+                                if current_ai_text:
+                                    final_ai = current_ai_text.strip()
+                                    if final_ai:
+                                        print(f"[AI Transcript]: {final_ai}")
+                                        if recorder:
+                                            recorder.add_transcript("model", final_ai)
+                                        if web_server:
+                                            await web_server.broadcast("transcript_turn_complete", {
+                                                "role": "model",
+                                                "text": final_ai
+                                            })
+                                    current_ai_text = ""
 
-                                    # Push complete 640-byte frames into playback queue
-                                    while len(leftover_bytes) >= chunk_size:
-                                        frame = bytes(leftover_bytes[:chunk_size])
-                                        del leftover_bytes[:chunk_size]
-                                        try:
-                                            bridge.to_hfp.put_nowait(frame)
-                                        except queue.Full:
-                                            pass
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        if not stop_event.is_set() and not session_stop_event.is_set():
+                            code = getattr(e, 'code', None)
+                            reason = getattr(e, 'reason', '')
+                            print(f"[Receiver] Session closed: {type(e).__name__}: {e} (code={code}, reason='{reason}')")
+                        session_stop_event.set()
+                        break
 
-                                # If turn completes and leftover audio exists, flush it
-                                if server_content.turn_complete:
-                                    if len(leftover_bytes) > 0:
-                                        padding = chunk_size - len(leftover_bytes)
-                                        leftover_bytes.extend(b"\x00" * padding)
-                                        try:
-                                            bridge.to_hfp.put_nowait(bytes(leftover_bytes))
-                                        except queue.Full:
-                                            pass
-                                        leftover_bytes.clear()
+            send_task = asyncio.create_task(sender())
+            recv_task = asyncio.create_task(receiver())
 
-                        except asyncio.CancelledError:
-                            break
-                        except Exception as e:
-                            if not stop_event.is_set() and not session_stop_event.is_set():
-                                code = getattr(e, 'code', None)
-                                reason = getattr(e, 'reason', '')
-                                print(f"[Receiver] Session closed: {type(e).__name__}: {e} (code={code}, reason='{reason}')")
-                            session_stop_event.set()
-                            break
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(stop_event.wait()),
+                    asyncio.create_task(session_stop_event.wait()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for p in pending:
+                p.cancel()
 
-                send_task = asyncio.create_task(sender())
-                recv_task = asyncio.create_task(receiver())
+            send_task.cancel()
+            recv_task.cancel()
+            await asyncio.gather(send_task, recv_task, return_exceptions=True)
 
-                done, pending = await asyncio.wait(
-                    [
-                        asyncio.create_task(stop_event.wait()),
-                        asyncio.create_task(session_stop_event.wait()),
-                    ],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for p in pending:
-                    p.cancel()
+            # Flush any uncommitted spoken turns upon session completion
+            if current_caller_text:
+                final_caller = current_caller_text.strip()
+                if final_caller:
+                    if recorder:
+                        recorder.add_transcript("caller", final_caller)
+                    if web_server:
+                        await web_server.broadcast("transcript_turn_complete", {"role": "caller", "text": final_caller})
+                current_caller_text = ""
+            if current_ai_text:
+                final_ai = current_ai_text.strip()
+                if final_ai:
+                    if recorder:
+                        recorder.add_transcript("model", final_ai)
+                    if web_server:
+                        await web_server.broadcast("transcript_turn_complete", {"role": "model", "text": final_ai})
+                current_ai_text = ""
 
-                send_task.cancel()
-                recv_task.cancel()
-                await asyncio.gather(send_task, recv_task, return_exceptions=True)
+        try:
+            if active_session:
+                await _run_session_pipeline(active_session)
+            else:
+                if is_initial_connect:
+                    print("Connecting to Gemini Live API...")
+                else:
+                    print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session...")
+
+                async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as fresh_session:
+                    await _run_session_pipeline(fresh_session)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -676,7 +956,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
 
         if not call_active:
             inactive_count += 1
-            threshold = 10 if bridge.is_healthy() else 6
+            threshold = 8 if bridge.is_healthy() else 5
             if inactive_count >= threshold:
                 print("\nCellular call became inactive (PhoneCallManager reported call ended).")
                 stop_event.set()
@@ -712,7 +992,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
                     stop_event.set()
                     break
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
 
 
 async def main_async():
@@ -730,18 +1010,19 @@ async def main_async():
     web_server = WebGatewayServer(port=5000)
     await web_server.start()
 
-    # Update initial hardware detection in web_server state
-    in_dev, out_dev = find_hfp_devices(quiet=True)
-    if in_dev is not None and out_dev is not None:
+    # Pre-discover and cache Bluetooth HFP endpoints for zero startup latency
+    cached_in_dev, cached_out_dev = find_hfp_devices(quiet=True)
+    if cached_in_dev is not None and cached_out_dev is not None:
         try:
             from web_server import clean_device_name
             devs = sd.query_devices()
-            clean_in = clean_device_name(devs[in_dev]["name"])
-            clean_out = clean_device_name(devs[out_dev]["name"])
+            clean_in = clean_device_name(devs[cached_in_dev]["name"])
+            clean_out = clean_device_name(devs[cached_out_dev]["name"])
             web_server.state["hfp_input_name"] = clean_in
             web_server.state["hfp_output_name"] = clean_out
             web_server.state["hfp_connected"] = True
             if "(" in clean_in and ")" in clean_in:
+                import re
                 m = re.search(r'\(([^)]+)\)', clean_in)
                 if m:
                     web_server.state["hfp_alias"] = m.group(1).strip()
@@ -763,20 +1044,85 @@ async def main_async():
     print(f" Web Platform URL : http://localhost:{web_server.port}")
     print(" Telephony Mode   : Automatic GSM Detection (WinRT)")
     print(" Call Audio Mode  : Synchronized Stereo WAV (L: Caller | R: AI)")
-    print(" Browser Studio   : Available on Web Platform")
+    print(" Jitter Buffer    : Active (120ms DynamicSCO Prebuffering)")
+    print(" Call Pre-Warming : Engaged on Incoming Ring (Zero Pickup Latency)")
     print("============================================================\n")
+
+    prewarmer = None
 
     # 3. Main continuous standby loop for GSM cellular calls
     while True:
         print(f"[{time.strftime('%H:%M:%S')}] Standby: Monitoring for incoming cellular calls...")
 
-        # Wait until a cellular call is detected
-        while not PhoneCallManager.get_is_call_active():
-            await asyncio.sleep(0.5)
+        was_incoming = False
+        last_voip_notice = 0.0
+        while True:
+            try:
+                call_active = PhoneCallManager.get_is_call_active()
+                call_incoming = PhoneCallManager.get_is_call_incoming()
+            except Exception:
+                call_active = False
+                call_incoming = False
+
+            # Strictly ignore VoIP calls ringing or active on the PC (WhatsApp Desktop, Teams, Skype, Zoom)
+            if (call_active or call_incoming) and is_pc_voip_call_active():
+                now = time.time()
+                if now - last_voip_notice > 5.0:
+                    last_voip_notice = now
+                    print(f"[{time.strftime('%H:%M:%S')}] [Telephony] ℹ️ Ignoring PC VoIP call (WhatsApp Desktop / Messenger). Callink strictly handles cellular SIM calls.")
+                await asyncio.sleep(0.3)
+                continue
+
+            if call_active:
+                break
+
+            if call_incoming and not was_incoming:
+                was_incoming = True
+                print("\n[Telephony] 🔔 INCOMING GSM CELLULAR CALL RINGING — PRE-WARMING AI...")
+                web_server.state["phone_call_incoming"] = True
+                web_server.state["status"] = "ringing"
+                await web_server.broadcast("call_ringing", {})
+
+                # Pre-connect Gemini Live API in the background while the phone rings
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if api_key:
+                    curr_settings = load_settings()
+                    v_name = curr_settings.get("voice_name", "Puck")
+                    sys_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+                    live_cfg = types.LiveConnectConfig(
+                        response_modalities=["AUDIO"],
+                        system_instruction=sys_inst,
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=v_name)
+                            )
+                        ),
+                        input_audio_transcription=types.AudioTranscriptionConfig(),
+                        output_audio_transcription=types.AudioTranscriptionConfig(),
+                    )
+                    prewarmer = GeminiPrewarmer(api_key, GEMINI_MODEL, live_cfg)
+                    prewarmer.start_prewarm()
+
+            elif not call_incoming and was_incoming:
+                # Ring ceased without being answered (caller hung up / missed call)
+                print("[Telephony] Incoming call ceased before pickup (missed/declined). Returning to standby.")
+                was_incoming = False
+                web_server.state["phone_call_incoming"] = False
+                web_server.state["status"] = "standby"
+                await web_server.broadcast("call_cancelled", {})
+                if prewarmer:
+                    await prewarmer.release()
+                    prewarmer = None
+
+            await asyncio.sleep(0.1)
 
         print("\n" + "="*50)
-        print(" >>> CELLULAR GSM CALL ACTIVE - STARTING AI VOICE GATEWAY <<<")
+        print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
         print("="*50)
+
+        # Mute background hardware monitor during call to protect audio threads
+        from web_server import set_in_call_state
+        set_in_call_state(True)
 
         # Initialize Dual-Track Audio Recorder
         recorder = CallRecorder(call_type="gsm")
@@ -790,23 +1136,37 @@ async def main_async():
         web_server.state["live_transcripts"] = []
         await web_server.broadcast("call_started", {"call_id": recorder.call_id, "call_type": "gsm"})
 
-        bridge = HFPBridge()
+        # Allow Windows Bluetooth SCO hardware link 350ms to settle upon pickup
+        await asyncio.sleep(0.35)
+
+        # Re-resolve endpoints to capture freshly activated WASAPI or updated endpoints
+        active_in, active_out = find_hfp_devices(quiet=True, force_refresh=True)
+        if active_in is not None and active_out is not None:
+            bridge = HFPBridge(in_dev=active_in, out_dev=active_out)
+        else:
+            bridge = HFPBridge(in_dev=cached_in_dev, out_dev=cached_out_dev)
 
         try:
             bridge.start()
             stop_event = asyncio.Event()
             await asyncio.gather(
-                run_gemini_bridge(bridge, stop_event, recorder, web_server),
+                run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer),
                 watch_call_and_hfp(bridge, stop_event),
             )
         except Exception as e:
             print(f"\n[Gateway Session Error]: {type(e).__name__}: {e}")
             traceback.print_exc(file=sys.stdout)
         finally:
+            if prewarmer:
+                await prewarmer.release()
+                prewarmer = None
+
             try:
                 bridge.stop()
             except Exception:
                 pass
+
+            set_in_call_state(False)
 
             # Finalize call audio recording and broadcast to web platform
             metadata = recorder.finish()
@@ -816,6 +1176,8 @@ async def main_async():
             web_server.state["call_start_time"] = None
             web_server.state["caller_rms"] = 0
             web_server.state["ai_rms"] = 0
+            web_server.state["phone_call_incoming"] = False
+            web_server.state["phone_call_active"] = False
             await web_server.broadcast("call_ended", {"metadata": metadata})
 
             print("="*50)
@@ -824,7 +1186,7 @@ async def main_async():
 
         # Wait until cellular call is fully cleared before returning to standby
         while PhoneCallManager.get_is_call_active():
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
 
 def main():

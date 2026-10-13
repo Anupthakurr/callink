@@ -61,6 +61,11 @@
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         AI Persona
       </button>
+      <button class="nav-tab" data-tab="terminal" id="tabBtnTerminal">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        Terminal Logs
+        <span id="terminalBadge" class="tab-badge">0</span>
+      </button>
       <button class="nav-tab nav-tab-quit" id="btnQuitGateway" title="Quit Callink Background Service">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 11-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
         Quit Gateway
@@ -431,6 +436,51 @@
               </button>
               <span id="settingsSaveToast" class="save-toast hidden">✓ Settings saved successfully!</span>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+ 
+    <!-- ========================================== -->
+    <!-- TAB 5: LIVE TERMINAL & SYSTEM CONSOLE -->
+    <!-- ========================================== -->
+    <section id="paneTerminal" class="tab-pane">
+      <div class="terminal-container">
+        <div class="terminal-window">
+          <!-- Terminal Header Bar -->
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+              <span class="terminal-title">Callink AI Gateway — Live System Console</span>
+            </div>
+            <div class="terminal-controls">
+              <span id="terminalStatusPill" class="terminal-status-live">
+                <span class="dot-pulse"></span>
+                STREAMING LIVE
+              </span>
+              <label class="terminal-checkbox-label" title="Automatically scroll down as new log messages arrive">
+                <input type="checkbox" id="chkTerminalAutoScroll" checked>
+                <span>Auto-scroll</span>
+              </label>
+              <button id="btnCopyTerminal" class="btn-sm btn-ghost" title="Copy all console logs to clipboard">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>
+                Copy Logs
+              </button>
+              <button id="btnDownloadTerminal" class="btn-sm btn-ghost" title="Download log file">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                Export .log
+              </button>
+              <button id="btnClearTerminal" class="btn-sm btn-ghost btn-danger-ghost" title="Clear console output">
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <!-- Terminal Content Area -->
+          <div id="terminalScreen" class="terminal-screen">
+            <!-- Dynamic terminal lines stream here -->
           </div>
         </div>
       </div>

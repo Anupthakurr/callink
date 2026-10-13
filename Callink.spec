@@ -8,6 +8,7 @@ hiddenimports = []
 datas += copy_metadata('google-genai')
 datas += copy_metadata('sounddevice')
 datas += copy_metadata('aiohttp')
+datas += copy_metadata('pycaw')
 tmp_ret = collect_all('sounddevice')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('winrt')
@@ -15,6 +16,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('google.genai')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('aiohttp')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pycaw')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

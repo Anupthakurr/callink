@@ -27,6 +27,7 @@ const appState = {
   isStudioCalling: false,
   studioTimerInterval: null,
   studioSeconds: 0,
+  terminalEntries: [],
 };
 
 // Preset Prompts for AI Persona
@@ -57,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initRecordingsLibrary();
   initStudioMode();
   initSettings();
+  initTerminalConsole();
 });
 
 // ==========================================================================
@@ -160,13 +162,34 @@ function initTelemetryWebSocket() {
 
   connect();
 
-  // Polling fallback every 1.5s for audio levels and gateway state
-  setInterval(fetchStatusPolling, 1500);
+  // Gentle fallback polling only when WebSocket is disconnected
+  setInterval(() => {
+    if (!appState.telemetryWs || appState.telemetryWs.readyState !== WebSocket.OPEN) {
+      fetchStatusPolling();
+    }
+  }, 8000);
 }
 
 function handleTelemetryMessage(msg) {
   if (msg.type === 'state_update') {
     updateGatewayState(msg.state);
+  } else if (msg.type === 'audio_levels' && msg.data) {
+    renderAudioMeter('callerMeterBar', 'callerRmsVal', msg.data.caller_rms || 0);
+    renderAudioMeter('aiMeterBar', 'aiRmsVal', msg.data.ai_rms || 0);
+  } else if (msg.type === 'call_ringing') {
+    const statusPill = document.getElementById('statusPill');
+    const statusText = document.getElementById('statusText');
+    if (statusPill && statusText) {
+      statusPill.className = 'status-pill status-warning';
+      statusText.textContent = 'INCOMING CALL RINGING — PRE-WARMING AI...';
+    }
+  } else if (msg.type === 'call_cancelled') {
+    const statusPill = document.getElementById('statusPill');
+    const statusText = document.getElementById('statusText');
+    if (statusPill && statusText) {
+      statusPill.className = 'status-pill status-standby';
+      statusText.textContent = 'STANDBY — WAITING FOR CALL';
+    }
   } else if (msg.type === 'pong') {
     const rtt = Math.max(1, Math.round(performance.now() - (msg.t || 0)));
     const latencyDisplay = document.getElementById('latencyDisplay');
@@ -177,10 +200,20 @@ function handleTelemetryMessage(msg) {
     startLiveCallUI(msg.data.call_id, msg.data.call_type || 'gsm');
   } else if (msg.type === 'call_ended') {
     endLiveCallUI(msg.data.metadata);
-  } else if (msg.type === 'transcript') {
+  } else if (msg.type === 'transcript_chunk' && msg.data) {
+    appendLiveTranscriptChunk(msg.data.role, msg.data.text);
+  } else if (msg.type === 'transcript_turn_complete' && msg.data) {
+    finalizeLiveTranscriptTurn(msg.data.role, msg.data.text);
+  } else if (msg.type === 'transcript' && msg.data) {
     appendLiveTranscript(msg.data.role, msg.data.text);
   } else if (msg.type === 'barge_in') {
     triggerBargeInFlash();
+  } else if (msg.type === 'init_terminal_logs' && msg.entries) {
+    renderInitTerminalLogs(msg.entries);
+  } else if (msg.type === 'terminal_logs' && msg.entries) {
+    appendTerminalLogs(msg.entries);
+  } else if (msg.type === 'terminal_logs_cleared') {
+    clearTerminalUI();
   }
 }
 
@@ -346,6 +379,21 @@ function updateGatewayState(state) {
   // VU Meters Audio Level animation
   renderAudioMeter('callerMeterBar', 'callerRmsVal', state.caller_rms || 0);
   renderAudioMeter('aiMeterBar', 'aiRmsVal', state.ai_rms || 0);
+
+  // Restore live transcripts if available and box currently showing only placeholder
+  if (state.live_transcripts && state.live_transcripts.length > 0) {
+    const box = document.getElementById('liveTranscriptBox');
+    if (box) {
+      const placeholder = document.getElementById('transcriptPlaceholder');
+      const bubbles = box.querySelectorAll('.chat-bubble');
+      if (placeholder || bubbles.length === 0) {
+        if (placeholder) placeholder.remove();
+        state.live_transcripts.forEach(t => {
+          appendLiveTranscript(t.role, t.text);
+        });
+      }
+    }
+  }
 }
 
 function renderAudioMeter(barId, labelId, rms) {
@@ -362,6 +410,7 @@ function renderAudioMeter(barId, labelId, rms) {
 function startLiveCallUI(callId, callType) {
   appState.callActive = true;
   appState.callSeconds = 0;
+  finalizeLiveTranscriptTurn();
 
   const banner = document.getElementById('liveCallBanner');
   banner.classList.remove('hidden');
@@ -380,6 +429,7 @@ function startLiveCallUI(callId, callType) {
 function endLiveCallUI(metadata) {
   appState.callActive = false;
   clearInterval(appState.callTimerInterval);
+  finalizeLiveTranscriptTurn();
 
   const banner = document.getElementById('liveCallBanner');
   if (banner) banner.classList.add('hidden');
@@ -400,10 +450,72 @@ function triggerBargeInFlash() {
   }, 1200);
 }
 
-function appendLiveTranscript(role, text) {
+let currentLiveBubble = null;
+let currentLiveRole = null;
+let currentLiveText = '';
+
+function appendLiveTranscriptChunk(role, textChunk) {
+  if (!textChunk) return;
   const container = document.getElementById('liveTranscriptBox');
+  if (!container) return;
   const placeholder = document.getElementById('transcriptPlaceholder');
   if (placeholder) placeholder.remove();
+
+  if (!currentLiveBubble || currentLiveRole !== role) {
+    currentLiveRole = role;
+    currentLiveText = textChunk;
+
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${role === 'model' ? 'bubble-ai' : 'bubble-caller'}`;
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    bubble.innerHTML = `
+      <div class="bubble-header">
+        <span>${role === 'model' ? '🤖 Gemini AI' : '📞 Caller'}</span>
+        <span class="bubble-time">${timeStr}</span>
+      </div>
+      <div class="bubble-text">${escapeHtml(textChunk)}</div>
+    `;
+
+    container.appendChild(bubble);
+    currentLiveBubble = bubble;
+  } else {
+    currentLiveText += textChunk;
+    const textEl = currentLiveBubble.querySelector('.bubble-text');
+    if (textEl) {
+      textEl.textContent = currentLiveText;
+    }
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function finalizeLiveTranscriptTurn(role, text) {
+  if (currentLiveBubble && text) {
+    const textEl = currentLiveBubble.querySelector('.bubble-text');
+    if (textEl) {
+      textEl.textContent = text;
+    }
+  }
+  currentLiveBubble = null;
+  currentLiveRole = null;
+  currentLiveText = '';
+}
+
+function appendLiveTranscript(role, text) {
+  if (!text) return;
+  const container = document.getElementById('liveTranscriptBox');
+  if (!container) return;
+  const placeholder = document.getElementById('transcriptPlaceholder');
+  if (placeholder) placeholder.remove();
+
+  if (currentLiveBubble && currentLiveRole === role) {
+    const textEl = currentLiveBubble.querySelector('.bubble-text');
+    if (textEl) textEl.textContent = text;
+    finalizeLiveTranscriptTurn(role, text);
+    return;
+  }
 
   const bubble = document.createElement('div');
   bubble.className = `chat-bubble ${role === 'model' ? 'bubble-ai' : 'bubble-caller'}`;
@@ -421,16 +533,20 @@ function appendLiveTranscript(role, text) {
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
+  finalizeLiveTranscriptTurn(role, text);
 }
 
 document.getElementById('btnClearLiveTranscript')?.addEventListener('click', () => {
+  finalizeLiveTranscriptTurn();
   const box = document.getElementById('liveTranscriptBox');
-  box.innerHTML = `
-    <div class="transcript-placeholder" id="transcriptPlaceholder">
-      <div class="pulse-placeholder-dot"></div>
-      Waiting for an incoming GSM cellular call or Browser Studio session to begin transcription...
-    </div>
-  `;
+  if (box) {
+    box.innerHTML = `
+      <div class="transcript-placeholder" id="transcriptPlaceholder">
+        <div class="pulse-placeholder-dot"></div>
+        Waiting for speech in active call...
+      </div>
+    `;
+  }
 });
 
 // ==========================================================================
@@ -835,7 +951,11 @@ async function startBrowserVoiceCall() {
     ws.onmessage = async (event) => {
       if (typeof event.data === 'string') {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'transcript') {
+        if (msg.type === 'transcript_chunk') {
+          appendStudioTranscriptChunk(msg.role, msg.text);
+        } else if (msg.type === 'transcript_turn_complete') {
+          finalizeStudioTranscriptTurn(msg.role, msg.text);
+        } else if (msg.type === 'transcript') {
           appendStudioTranscript(msg.role, msg.text);
         } else if (msg.type === 'call_ended') {
           teardownStudioSession();
@@ -918,8 +1038,67 @@ function playGeminiPcmChunk(arrayBuffer) {
   studioNextStartTime += audioBuffer.duration;
 }
 
-function appendStudioTranscript(role, text) {
+let currentStudioBubble = null;
+let currentStudioRole = null;
+let currentStudioText = '';
+
+function appendStudioTranscriptChunk(role, textChunk) {
+  if (!textChunk) return;
   const box = document.getElementById('studioTranscriptsBox');
+  if (!box) return;
+  const placeholder = box.querySelector('.transcript-placeholder');
+  if (placeholder) placeholder.remove();
+
+  if (!currentStudioBubble || currentStudioRole !== role) {
+    currentStudioRole = role;
+    currentStudioText = textChunk;
+
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${role === 'model' ? 'bubble-ai' : 'bubble-caller'}`;
+    bubble.innerHTML = `
+      <div class="bubble-header">
+        <span>${role === 'model' ? '🤖 Gemini AI' : '👤 You'}</span>
+      </div>
+      <div class="bubble-text">${escapeHtml(textChunk)}</div>
+    `;
+    box.appendChild(bubble);
+    currentStudioBubble = bubble;
+  } else {
+    currentStudioText += textChunk;
+    const textEl = currentStudioBubble.querySelector('.bubble-text');
+    if (textEl) {
+      textEl.textContent = currentStudioText;
+    }
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+function finalizeStudioTranscriptTurn(role, text) {
+  if (currentStudioBubble && text) {
+    const textEl = currentStudioBubble.querySelector('.bubble-text');
+    if (textEl) {
+      textEl.textContent = text;
+    }
+  }
+  currentStudioBubble = null;
+  currentStudioRole = null;
+  currentStudioText = '';
+}
+
+function appendStudioTranscript(role, text) {
+  if (!text) return;
+  const box = document.getElementById('studioTranscriptsBox');
+  if (!box) return;
+  const placeholder = box.querySelector('.transcript-placeholder');
+  if (placeholder) placeholder.remove();
+
+  if (currentStudioBubble && currentStudioRole === role) {
+    const textEl = currentStudioBubble.querySelector('.bubble-text');
+    if (textEl) textEl.textContent = text;
+    finalizeStudioTranscriptTurn(role, text);
+    return;
+  }
+
   const bubble = document.createElement('div');
   bubble.className = `chat-bubble ${role === 'model' ? 'bubble-ai' : 'bubble-caller'}`;
   bubble.innerHTML = `
@@ -930,6 +1109,7 @@ function appendStudioTranscript(role, text) {
   `;
   box.appendChild(bubble);
   box.scrollTop = box.scrollHeight;
+  finalizeStudioTranscriptTurn(role, text);
 }
 
 function endBrowserVoiceCall() {
@@ -1086,3 +1266,147 @@ function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ==========================================================================
+// Live Terminal Console
+// ==========================================================================
+
+function initTerminalConsole() {
+  const btnCopy = document.getElementById('btnCopyTerminal');
+  const btnDownload = document.getElementById('btnDownloadTerminal');
+  const btnClear = document.getElementById('btnClearTerminal');
+
+  if (btnCopy) {
+    btnCopy.addEventListener('click', () => {
+      if (!appState.terminalEntries.length) return;
+      const fullText = appState.terminalEntries.map(e => `[${e.time_str}] ${e.text}`).join('\n');
+      navigator.clipboard.writeText(fullText).then(() => {
+        const orig = btnCopy.innerHTML;
+        btnCopy.innerHTML = '✓ Copied!';
+        setTimeout(() => { btnCopy.innerHTML = orig; }, 2000);
+      });
+    });
+  }
+
+  if (btnDownload) {
+    btnDownload.addEventListener('click', () => {
+      if (!appState.terminalEntries.length) return;
+      const fullText = appState.terminalEntries.map(e => `[${e.time_str}] ${e.text}`).join('\n');
+      const blob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `callink_console_${new Date().toISOString().slice(0, 10)}.log`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  if (btnClear) {
+    btnClear.addEventListener('click', async () => {
+      try {
+        await fetch('/api/logs/clear', { method: 'POST' });
+      } catch (e) {}
+      clearTerminalUI();
+    });
+  }
+}
+
+function formatTerminalText(rawText) {
+  let escaped = escapeHtml(rawText);
+
+  // Dividers
+  if (/^={10,}/.test(escaped) || /^-{10,}/.test(escaped)) {
+    return `<span class="term-tag-divider">${escaped}</span>`;
+  }
+
+  // Major section headers
+  if (escaped.includes('&gt;&gt;&gt;') || escaped.includes('CALLINK:')) {
+    escaped = `<span class="term-tag-header">${escaped}</span>`;
+  }
+
+  // Keywords & Tags
+  escaped = escaped.replace(/(\[Telephony\][^—:]*)/g, '<span class="term-tag-telephony">$1</span>');
+  escaped = escaped.replace(/(\[Pre-warm\])/g, '<span class="term-tag-prewarm">$1</span>');
+  escaped = escaped.replace(/(\[Audio Link\])/g, '<span class="term-tag-audiolink">$1</span>');
+  escaped = escaped.replace(/(\[Web Platform\])/g, '<span class="term-tag-gateway">$1</span>');
+  escaped = escaped.replace(/(\[BARGE-IN\])/g, '<span class="term-tag-bargein">$1</span>');
+  escaped = escaped.replace(/(\[Recorder\])/g, '<span class="term-tag-telephony">$1</span>');
+  escaped = escaped.replace(/(\[Standby\]|Standby:)/g, '<span class="term-tag-audiolink">$1</span>');
+
+  // Error / Warning highlights
+  if (escaped.includes('Error') || escaped.includes('Traceback') || escaped.includes('Exception') || escaped.includes('Failed')) {
+    escaped = `<span class="term-tag-error">${escaped}</span>`;
+  } else if (escaped.includes('Warning') || escaped.includes('Retrying')) {
+    escaped = `<span class="term-tag-warn">${escaped}</span>`;
+  }
+
+  return escaped;
+}
+
+function renderInitTerminalLogs(entries) {
+  if (!Array.isArray(entries)) return;
+  appState.terminalEntries = entries.slice(-1000);
+  const screen = document.getElementById('terminalScreen');
+  const badge = document.getElementById('terminalBadge');
+  if (!screen) return;
+
+  screen.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  appState.terminalEntries.forEach(entry => {
+    const lineDiv = document.createElement('div');
+    lineDiv.className = 'terminal-line';
+    lineDiv.innerHTML = `<span class="term-time">${escapeHtml(entry.time_str || '')}</span><span class="term-text">${formatTerminalText(entry.text || '')}</span>`;
+    fragment.appendChild(lineDiv);
+  });
+  screen.appendChild(fragment);
+
+  if (badge) badge.textContent = appState.terminalEntries.length;
+
+  const autoScroll = document.getElementById('chkTerminalAutoScroll');
+  if (autoScroll && autoScroll.checked) {
+    screen.scrollTop = screen.scrollHeight;
+  }
+}
+
+function appendTerminalLogs(entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  const screen = document.getElementById('terminalScreen');
+  const badge = document.getElementById('terminalBadge');
+  if (!screen) return;
+
+  const fragment = document.createDocumentFragment();
+  entries.forEach(entry => {
+    appState.terminalEntries.push(entry);
+    if (appState.terminalEntries.length > 2000) {
+      appState.terminalEntries.shift();
+    }
+    const lineDiv = document.createElement('div');
+    lineDiv.className = 'terminal-line';
+    lineDiv.innerHTML = `<span class="term-time">${escapeHtml(entry.time_str || '')}</span><span class="term-text">${formatTerminalText(entry.text || '')}</span>`;
+    fragment.appendChild(lineDiv);
+  });
+  screen.appendChild(fragment);
+
+  while (screen.children.length > 2000) {
+    screen.removeChild(screen.firstChild);
+  }
+
+  if (badge) badge.textContent = appState.terminalEntries.length;
+
+  const autoScroll = document.getElementById('chkTerminalAutoScroll');
+  if (autoScroll && autoScroll.checked) {
+    screen.scrollTop = screen.scrollHeight;
+  }
+}
+
+function clearTerminalUI() {
+  appState.terminalEntries = [];
+  const screen = document.getElementById('terminalScreen');
+  const badge = document.getElementById('terminalBadge');
+  if (screen) screen.innerHTML = '';
+  if (badge) badge.textContent = '0';
+}
+

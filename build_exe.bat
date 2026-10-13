@@ -20,16 +20,18 @@ echo (This may take 1-2 minutes to package all dependencies)
 echo.
 
 
-pyinstaller --onefile --clean ^
+pyinstaller --noconsole --onefile --clean ^
     --name "Callink" ^
     --add-data "web;web" ^
     --collect-all sounddevice ^
     --collect-all winrt ^
     --collect-all google.genai ^
     --collect-all aiohttp ^
+    --collect-all pycaw ^
     --copy-metadata google-genai ^
     --copy-metadata sounddevice ^
     --copy-metadata aiohttp ^
+    --copy-metadata pycaw ^
     gsm_gemini_gateway.py
 
 if %ERRORLEVEL% neq 0 (
