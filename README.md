@@ -78,14 +78,15 @@ Callink was engineered to solve the prohibitive conversational latency inherent 
 
 ---
 
-## Key Features
-
+- **Outbound Cellular AI Calling & Proactive Dispatch:** Dial out directly to customers over the cellular GSM network via Windows Phone Link or Android ADB. When the customer answers, Gemini Live proactively speaks first with a customized greeting and purpose statement, addressing them by name and grounding answers in your uploaded business documents!
+- **Business Document Upload & Direct Grounding:** Upload enterprise documents (.pdf, .docx, .txt, .md, .csv, .json) directly through the web platform. The documents are injected straight into Gemini Live's active system instruction context for grounded, accurate answers on live phone calls without third-party vector databases.
+- **Multilingual Support with Default Language Selector:** Configure the assistant's default language (English, Hindi, Maithili, Spanish, French, German, Arabic, etc.) with real-time multilingual code-switching.
 - **Built-in Web Dashboard Platform:** Running Callink automatically opens an ultra-modern glassmorphic web dashboard (`http://localhost:5000`) for live monitoring, controlling settings, and reviewing conversations.
 - **Automated Dual-Track Call Recording:** Every telephone conversation is automatically recorded into studio-grade 16 kHz 16-bit stereo WAV files (`recordings/` folder):
   - **Left Channel:** Clean caller voice from cellular Phone Link.
   - **Right Channel:** AI assistant voice from Gemini Live.
   - **Web Audio Channel Isolator:** Listen to Stereo, isolate Caller Only (Left), isolate AI Only (Right), or blend to Mixed Mono right in your browser!
-- **In-Browser Voice Studio:** Talk directly with the Gemini Live AI assistant inside the web browser using your laptop microphone and speakers to test prompts or record conversations without needing a phone!
+- **In-Browser Voice Studio:** Talk directly with the Gemini Live AI assistant inside the web browser using your laptop microphone and speakers to test prompts, simulate outbound calls, or record conversations without needing a phone!
 - **Conversation Transcripts & Metadata Library:** Real-time auto-scrolling conversation transcripts saved alongside each recording in JSON format with timestamps and event telemetry.
 - **Dynamic AI Persona & Voice Customizer:** Configure Gemini voice personas (Puck, Charon, Aoede, Fenrir, Kore) and customize system prompt scripts with pre-built business templates (Receptionist, Sales & Lead Qualifier, Appointment Scheduler, Support).
 - **Direct Gemini Live Connection:** Direct streaming using the official `google-genai` SDK without intermediate SIP servers, Asterisk, or third-party wrappers.

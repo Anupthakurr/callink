@@ -101,6 +101,7 @@ from google.genai import types
 from call_recorder import CallRecorder
 from web_server import WebGatewayServer, load_settings, DEFAULT_SETTINGS
 import knowledge_manager as km
+import outbound_dialer as dialer
 
 
 def ensure_gemini_api_key(allow_web_prompt: bool = True) -> str:
@@ -593,7 +594,8 @@ async def run_gemini_bridge(
     stop_event: asyncio.Event,
     recorder: CallRecorder = None,
     web_server: WebGatewayServer = None,
-    prewarmer: GeminiPrewarmer = None
+    prewarmer: GeminiPrewarmer = None,
+    outbound_info: dict = None
 ):
     """Owns the Gemini Live session for the duration of one call.
     Streams caller audio to Gemini, plays synthesized replies into phone call,
@@ -659,21 +661,24 @@ async def run_gemini_bridge(
             if flushed > 0:
                 print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
 
-            # Proactively prompt Gemini to greet caller on pickup
+            # Proactively prompt Gemini to speak first on pickup
             if is_initial_connect:
-                print("[Gateway] Requesting immediate AI greeting...")
                 try:
+                    if outbound_info:
+                        greeting_turn = dialer.build_outbound_proactive_prompt(outbound_info)
+                        print(f"[Gateway] 🚀 Outbound call connected to {outbound_info.get('contact_name')}! Proactive opening prompt dispatched to Gemini Live.")
+                    else:
+                        print("[Gateway] Requesting immediate inbound AI greeting...")
+                        greeting_turn = (
+                            "[A caller has just connected to the phone call. "
+                            "Immediately greet them warmly and concisely in one short sentence, "
+                            "such as 'Hello! Thanks for calling, how can I help you today?']"
+                        )
                     await session.send_client_content(
                         turns=types.Content(
                             role="user",
                             parts=[
-                                types.Part(
-                                    text=(
-                                        "[A caller has just connected to the phone call. "
-                                        "Immediately greet them warmly and concisely in one short sentence, "
-                                        "such as 'Hello! Thanks for calling, how can I help you today?']"
-                                    )
-                                )
+                                types.Part(text=greeting_turn)
                             ],
                         ),
                         turn_complete=True,
@@ -1172,25 +1177,44 @@ async def main_async():
 
             await asyncio.sleep(0.1)
 
-        print("\n" + "="*50)
-        print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
-        print("="*50)
+        # Check if an outbound call was dialed and has now connected
+        outbound_info = dialer.consume_active_outbound()
+        if outbound_info:
+            call_type = "outbound_gsm"
+            print("\n" + "="*50)
+            print(f" >>> OUTBOUND CELLULAR CALL CONNECTED TO {outbound_info.get('contact_name')} ({outbound_info.get('phone_number')}) <<<")
+            print(" >>> ENGAGING AI PROACTIVE VOICE GATEWAY (AI SPEAKS FIRST) <<<")
+            print("="*50)
+        else:
+            call_type = "gsm"
+            print("\n" + "="*50)
+            print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
+            print("="*50)
 
         # Mute background hardware monitor during call to protect audio threads
         from web_server import set_in_call_state
         set_in_call_state(True)
 
         # Initialize Dual-Track Audio Recorder
-        recorder = CallRecorder(call_type="gsm")
+        recorder = CallRecorder(call_type=call_type)
+        if outbound_info:
+            recorder.extra_metadata = {
+                "direction": "outbound",
+                "outbound_info": outbound_info,
+            }
         recorder.start()
 
         # Update Server State
         web_server.state["status"] = "in_call"
-        web_server.state["call_type"] = "gsm"
+        web_server.state["call_type"] = call_type
         web_server.state["call_id"] = recorder.call_id
         web_server.state["call_start_time"] = time.time()
         web_server.state["live_transcripts"] = []
-        await web_server.broadcast("call_started", {"call_id": recorder.call_id, "call_type": "gsm"})
+        await web_server.broadcast("call_started", {
+            "call_id": recorder.call_id,
+            "call_type": call_type,
+            "outbound": outbound_info
+        })
 
         # Allow Windows Bluetooth SCO hardware link 350ms to settle upon pickup
         await asyncio.sleep(0.35)
@@ -1206,7 +1230,7 @@ async def main_async():
             bridge.start()
             stop_event = asyncio.Event()
             await asyncio.gather(
-                run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer),
+                run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer, outbound_info=outbound_info),
                 watch_call_and_hfp(bridge, stop_event),
             )
         except Exception as e:

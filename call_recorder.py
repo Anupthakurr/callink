@@ -52,6 +52,7 @@ class CallRecorder:
         # Audio chunk buffer for interleaving
         self._pending_caller = bytearray()
         self._pending_ai = bytearray()
+        self.extra_metadata: Dict[str, Any] = {}
 
     def start(self):
         """Initializes and opens the WAV file for low-latency streaming writes."""
@@ -162,6 +163,9 @@ class CallRecorder:
             "events": self.events,
             "total_samples": self.total_stereo_samples,
         }
+
+        if hasattr(self, "extra_metadata") and self.extra_metadata:
+            metadata.update(self.extra_metadata)
 
         try:
             with open(self.json_path, "w", encoding="utf-8") as f:

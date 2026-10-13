@@ -90,6 +90,7 @@ from call_recorder import (
     RECORDINGS_DIR,
 )
 import knowledge_manager as km
+import outbound_dialer as dialer
 import sounddevice as sd
 import re
 
@@ -355,6 +356,7 @@ class WebGatewayServer:
         self.state["recordings_count"] = len(get_all_recordings())
         self.state["knowledge_summary"] = km.get_knowledge_summary()
         self.state["server_uptime"] = int(time.time() - self.start_time)
+        self.state["outbound_state"] = dialer.get_active_outbound()
 
         return dict(self.state)
 
@@ -370,6 +372,11 @@ class WebGatewayServer:
         self.app.router.add_post("/api/shutdown", self.handle_post_shutdown)
         self.app.router.add_get("/api/logs", self.handle_get_logs)
         self.app.router.add_post("/api/logs/clear", self.handle_clear_logs)
+
+        # Outbound Cellular Dialing API Routes
+        self.app.router.add_post("/api/dial", self.handle_post_dial)
+        self.app.router.add_post("/api/dial/cancel", self.handle_post_dial_cancel)
+        self.app.router.add_get("/api/dial/status", self.handle_get_dial_status)
 
         # Knowledge Base Document API Routes
         self.app.router.add_get("/api/knowledge/documents", self.handle_get_knowledge_docs)
@@ -426,6 +433,45 @@ class WebGatewayServer:
         call_id = request.match_info.get("call_id")
         success = delete_recording(call_id)
         return web.json_response({"deleted": success, "call_id": call_id})
+
+    # =========================================================================
+    # Outbound Cellular Dialing API Handlers
+    # =========================================================================
+
+    async def handle_post_dial(self, request):
+        try:
+            data = await request.json()
+            phone = data.get("phone_number", "").strip()
+            contact_name = data.get("contact_name", "").strip()
+            call_goal = data.get("call_goal", "").strip()
+            lead_notes = data.get("lead_notes", "").strip()
+
+            if not phone:
+                return web.json_response({"error": "Phone number is required."}, status=400)
+
+            outbound_info = dialer.start_outbound_dial(
+                phone_number=phone,
+                contact_name=contact_name,
+                call_goal=call_goal,
+                lead_notes=lead_notes
+            )
+            self.state["outbound_state"] = outbound_info
+            await self.broadcast("outbound_dialing", {"outbound": outbound_info})
+            return web.json_response({"success": True, "outbound": outbound_info})
+        except ValueError as ve:
+            return web.json_response({"error": str(ve)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": f"Dialing failed: {e}"}, status=500)
+
+    async def handle_post_dial_cancel(self, request):
+        cancelled = dialer.cancel_outbound_dial()
+        self.state["outbound_state"] = None
+        await self.broadcast("outbound_cancelled", {})
+        return web.json_response({"cancelled": cancelled})
+
+    async def handle_get_dial_status(self, request):
+        outbound = dialer.get_active_outbound()
+        return web.json_response({"outbound": outbound})
 
     # =========================================================================
     # Knowledge Base API Handlers
@@ -679,17 +725,40 @@ class WebGatewayServer:
         base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
         system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
 
+        # Check if running in outbound simulation mode
+        is_outbound = request.query.get("outbound") == "1"
+        outbound_info = None
+        if is_outbound:
+            contact_name = request.query.get("name", "").strip() or "the customer"
+            call_goal = request.query.get("goal", "").strip() or "follow up with the customer and answer any questions"
+            lead_notes = request.query.get("notes", "").strip()
+            phone_num = request.query.get("phone", "").strip()
+            outbound_info = {
+                "contact_name": contact_name,
+                "call_goal": call_goal,
+                "lead_notes": lead_notes,
+                "phone_number": phone_num,
+                "display_number": phone_num,
+            }
+
+        call_type = "outbound_browser" if is_outbound else "browser"
+
         # Create browser recorder
-        recorder = CallRecorder(call_type="browser")
+        recorder = CallRecorder(call_type=call_type)
+        if is_outbound and outbound_info:
+            recorder.extra_metadata = {
+                "direction": "outbound",
+                "outbound_info": outbound_info,
+            }
         recorder.start()
 
         # Update server state
         self.state["status"] = "in_call"
-        self.state["call_type"] = "browser"
+        self.state["call_type"] = call_type
         self.state["call_id"] = recorder.call_id
         self.state["call_start_time"] = time.time()
         self.state["live_transcripts"] = []
-        await self.broadcast("call_started", {"call_id": recorder.call_id, "call_type": "browser"})
+        await self.broadcast("call_started", {"call_id": recorder.call_id, "call_type": call_type, "outbound": outbound_info})
 
         client = genai.Client(api_key=api_key)
         config = types.LiveConnectConfig(
@@ -710,18 +779,20 @@ class WebGatewayServer:
             async with client.aio.live.connect(model="gemini-3.1-flash-live-preview", config=config) as session:
                 await ws.send_json({"type": "connected", "call_id": recorder.call_id})
 
-                # Initial warm greeting
+                # Initial warm greeting or proactive outbound dispatch
                 try:
+                    if is_outbound and outbound_info:
+                        greeting_text = dialer.build_outbound_proactive_prompt(outbound_info)
+                    else:
+                        greeting_text = (
+                            "[A user has initiated an audio call with you in the browser. "
+                            "Greet them warmly and concisely in one short sentence.]"
+                        )
                     await session.send_client_content(
                         turns=types.Content(
                             role="user",
                             parts=[
-                                types.Part(
-                                    text=(
-                                        "[A user has initiated an audio call with you in the browser. "
-                                        "Greet them warmly and concisely in one short sentence.]"
-                                    )
-                                )
+                                types.Part(text=greeting_text)
                             ],
                         ),
                         turn_complete=True,

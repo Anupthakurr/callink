@@ -108,6 +108,91 @@
         </div>
       </div>
 
+      <!-- Outbound Dialing Status Banner (Hidden when idle) -->
+      <div id="outboundDialBanner" class="outbound-dial-banner hidden">
+        <div class="banner-left">
+          <div class="dial-pulse-ring">
+            <span class="ping"></span>
+            <span class="core"></span>
+          </div>
+          <div>
+            <div class="banner-heading" id="bannerDialTitle">DIALING OUTBOUND CELLULAR CALL...</div>
+            <div class="banner-sub" id="bannerDialSubtitle">Waiting for recipient to answer on paired smartphone...</div>
+          </div>
+        </div>
+        <div class="banner-right">
+          <button id="btnCancelOutboundDial" class="btn-sm btn-danger">✕ Cancel Dialing</button>
+        </div>
+      </div>
+
+      <!-- Outbound AI Dialer Card -->
+      <div class="glass-card outbound-card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              <polyline points="15 2 22 2 22 9"/>
+              <line x1="14" y1="10" x2="22" y2="2"/>
+            </svg>
+            Outbound AI Call Dispatcher
+          </div>
+          <span class="card-tag">Proactive Voice • Bluetooth Cellular &amp; Studio</span>
+        </div>
+
+        <form id="outboundDialForm" class="outbound-dial-form">
+          <div class="form-row-grid">
+            <div class="form-group">
+              <label for="dialPhoneNumber">Phone Number <span class="req-star">*</span></label>
+              <input type="tel" id="dialPhoneNumber" class="form-control" placeholder="e.g. +1 555-0199 or 9876543210" required />
+              <span class="field-hint">Windows Phone Link / Android cellular dialer</span>
+            </div>
+            <div class="form-group">
+              <label for="dialContactName">Contact / Recipient Name</label>
+              <input type="text" id="dialContactName" class="form-control" placeholder="e.g. Alex Johnson (Customer)" />
+              <span class="field-hint">AI greets them personalized by name</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="label-with-presets">
+              <label for="dialCallGoal">Call Objective &amp; Purpose</label>
+              <span class="presets-label">Quick Presets:</span>
+            </div>
+            <div class="goal-presets-wrap">
+              <button type="button" class="preset-goal-chip" data-goal="Follow up on business inquiry and qualify project requirements">🎯 Sales Follow-Up</button>
+              <button type="button" class="preset-goal-chip" data-goal="Remind client of upcoming scheduled consultation and confirm arrival">📅 Appointment Reminder</button>
+              <button type="button" class="preset-goal-chip" data-goal="Check in with VIP account holder regarding account satisfaction">⭐ VIP Lead Check-In</button>
+              <button type="button" class="preset-goal-chip" data-goal="Notify customer of order dispatch and offer support assistance">📦 Order &amp; Delivery Update</button>
+            </div>
+            <input type="text" id="dialCallGoal" class="form-control" placeholder="e.g. Follow up on demo request, explain pricing, and book a follow-up" />
+          </div>
+
+          <div class="form-group">
+            <label for="dialLeadNotes">Lead Context &amp; Prior Notes <span class="optional-tag">(Optional)</span></label>
+            <textarea id="dialLeadNotes" class="form-control notes-textarea" rows="2" placeholder="e.g. Customer viewed Enterprise Plan, mentioned 15 users, preferred callback in the afternoon..."></textarea>
+          </div>
+
+          <div class="dial-actions-bar">
+            <button type="submit" id="btnDialCellular" class="btn-primary btn-dial-main">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+              <span>Dial Cellular via Phone Link</span>
+            </button>
+            <button type="button" id="btnDialSimulateStudio" class="btn-secondary btn-dial-sim">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
+                <path d="M19 10v2a7 7 0 01-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+              <span>Simulate in Voice Studio</span>
+            </button>
+            <div id="dialStatusNotice" class="dial-status-notice hidden"></div>
+          </div>
+        </form>
+      </div>
+
       <!-- Telemetry Grid -->
       <div class="telemetry-grid">
         <!-- Live Audio VU Meters Card -->

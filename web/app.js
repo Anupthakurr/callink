@@ -60,6 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initRecordingsLibrary();
   initKnowledgeBase();
   initStudioMode();
+  initOutboundDialer();
   initSettings();
   initTerminalConsole();
 });
@@ -203,6 +204,10 @@ function handleTelemetryMessage(msg) {
     }
   } else if (msg.type === 'call_started') {
     startLiveCallUI(msg.data.call_id, msg.data.call_type || 'gsm');
+  } else if (msg.type === 'outbound_dialing' && msg.data) {
+    showOutboundDialingBanner(msg.data.outbound);
+  } else if (msg.type === 'outbound_cancelled') {
+    hideOutboundDialingBanner();
   } else if (msg.type === 'call_ended') {
     endLiveCallUI(msg.data.metadata);
   } else if (msg.type === 'transcript_chunk' && msg.data) {
@@ -252,13 +257,25 @@ function updateGatewayState(state) {
   // Update Status Pill
   if (state.status === 'in_call') {
     statusPill.className = 'status-pill status-in-call';
-    statusText.textContent = `${state.call_type === 'browser' ? 'BROWSER STUDIO CALL' : 'CELLULAR GSM CALL'} IN PROGRESS`;
+    let typeName = 'CELLULAR GSM CALL';
+    if (state.call_type === 'outbound_gsm') typeName = 'OUTBOUND GSM CALL';
+    else if (state.call_type === 'outbound_browser') typeName = 'OUTBOUND STUDIO CALL';
+    else if (state.call_type === 'browser') typeName = 'BROWSER STUDIO CALL';
+    statusText.textContent = `${typeName} IN PROGRESS`;
+    hideOutboundDialingBanner();
     if (!appState.callActive) {
       startLiveCallUI(state.call_id, state.call_type);
     }
+  } else if (state.outbound_state) {
+    statusPill.className = 'status-pill status-warning';
+    const num = state.outbound_state.display_number || state.outbound_state.phone_number || '';
+    const name = state.outbound_state.contact_name || '';
+    statusText.textContent = `DIALING ${num} (${name})...`;
+    showOutboundDialingBanner(state.outbound_state);
   } else {
     statusPill.className = 'status-pill status-standby';
     statusText.textContent = 'STANDBY — WAITING FOR CALL';
+    hideOutboundDialingBanner();
     if (appState.callActive) {
       endLiveCallUI();
     }
@@ -426,11 +443,26 @@ function startLiveCallUI(callId, callType) {
   appState.callSeconds = 0;
   finalizeLiveTranscriptTurn();
 
+  hideOutboundDialingBanner();
+
   const banner = document.getElementById('liveCallBanner');
   banner.classList.remove('hidden');
 
   const title = document.getElementById('bannerCallTitle');
-  title.textContent = callType === 'browser' ? 'BROWSER STUDIO CALL IN PROGRESS' : 'CELLULAR GSM CALL IN PROGRESS';
+  const sub = document.getElementById('bannerCallSubtitle');
+  if (callType === 'outbound_gsm') {
+    title.textContent = 'OUTBOUND CELLULAR CALL IN PROGRESS';
+    if (sub) sub.textContent = 'AI proactive voice agent connected (Speaking First with grounded business docs)';
+  } else if (callType === 'outbound_browser') {
+    title.textContent = 'OUTBOUND BROWSER STUDIO SESSION';
+    if (sub) sub.textContent = 'Simulated outbound call — AI proactive agent speaking first';
+  } else if (callType === 'browser') {
+    title.textContent = 'BROWSER STUDIO CALL IN PROGRESS';
+    if (sub) sub.textContent = 'Dual-track audio recording live to disk (Left: Mic | Right: AI)';
+  } else {
+    title.textContent = 'CELLULAR GSM CALL IN PROGRESS';
+    if (sub) sub.textContent = 'Dual-track audio recording live to disk (Left: Caller | Right: AI)';
+  }
 
   clearInterval(appState.callTimerInterval);
   appState.callTimerInterval = setInterval(() => {
@@ -810,8 +842,21 @@ function renderRecordingsList() {
       previewText = `"${speaker}: ${first.text}"`;
     }
 
-    const typeBadgeClass = rec.call_type === 'gsm' ? 'badge-gsm' : 'badge-browser';
-    const typeLabel = rec.call_type === 'gsm' ? '📱 GSM Cellular' : '💻 Browser Studio';
+    let typeBadgeClass = 'badge-gsm';
+    let typeLabel = '📱 GSM Cellular';
+    if (rec.call_type === 'outbound_gsm' || rec.direction === 'outbound') {
+      typeBadgeClass = 'badge-outbound';
+      const contact = rec.contact_name || rec.outbound_info?.contact_name || '';
+      typeLabel = contact ? `📞 Outbound (${contact})` : '📞 Outbound GSM';
+    } else if (rec.call_type === 'outbound_browser') {
+      typeBadgeClass = 'badge-outbound';
+      typeLabel = '🎙️ Outbound Studio';
+    } else if (rec.call_type === 'browser') {
+      typeBadgeClass = 'badge-browser';
+      typeLabel = '💻 Browser Studio';
+    }
+
+    const goalSnippet = rec.call_goal || rec.outbound_info?.call_goal || '';
 
     card.innerHTML = `
       <div class="recording-card-header">
@@ -821,6 +866,7 @@ function renderRecordingsList() {
             <span>📅 ${dateStr} at ${timeStr}</span>
             <span>⏱️ ${durationStr}</span>
             <span>💾 ${sizeStr}</span>
+            ${goalSnippet ? `<span>🎯 ${escapeHtml(goalSnippet)}</span>` : ''}
           </div>
         </div>
         <span class="rec-type-badge ${typeBadgeClass}">${typeLabel}</span>
@@ -914,7 +960,7 @@ function initStudioMode() {
   endBtn?.addEventListener('click', endBrowserVoiceCall);
 }
 
-async function startBrowserVoiceCall() {
+async function startBrowserVoiceCall(customWsUrl = null) {
   const startBtn = document.getElementById('btnStartBrowserCall');
   const endBtn = document.getElementById('btnEndBrowserCall');
   const orb = document.getElementById('studioOrb');
@@ -938,13 +984,16 @@ async function startBrowserVoiceCall() {
 
     // 2. Connect WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/browser_call`;
+    const wsUrl = customWsUrl || `${protocol}//${window.location.host}/ws/browser_call`;
     const ws = new WebSocket(wsUrl);
     appState.studioWs = ws;
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-      statusLabel.textContent = 'Connected! Speak to the AI assistant...';
+      const isOutbound = wsUrl.includes('outbound=1');
+      statusLabel.textContent = isOutbound
+        ? 'Connected! AI is speaking first to initiate the call...'
+        : 'Connected! Speak to the AI assistant...';
       orb.classList.add('active');
       startBtn.classList.add('hidden');
       endBtn.classList.remove('hidden');
@@ -1955,4 +2004,139 @@ async function openPromptInspector() {
     if (content) content.textContent = 'Failed to load prompt preview.';
   }
 }
+
+// ==========================================================================
+// Outbound Cellular & Voice Studio Dialer
+// ==========================================================================
+
+function showOutboundDialingBanner(outbound) {
+  const banner = document.getElementById('outboundDialBanner');
+  if (!banner) return;
+  banner.classList.remove('hidden');
+
+  const title = document.getElementById('bannerDialTitle');
+  const sub = document.getElementById('bannerDialSubtitle');
+  const name = outbound?.contact_name || 'Customer';
+  const num = outbound?.display_number || outbound?.phone_number || '';
+  if (title) title.textContent = `DIALING OUTBOUND CALL TO ${name.toUpperCase()}...`;
+  if (sub) sub.textContent = `Number: ${num} • Objective: "${outbound?.call_goal || 'General Follow-Up'}" — AI is prepared to speak first upon connection!`;
+
+  const statusPill = document.getElementById('statusPill');
+  const statusText = document.getElementById('statusText');
+  if (statusPill && statusText && !appState.callActive) {
+    statusPill.className = 'status-pill status-warning';
+    statusText.textContent = `DIALING ${num} (${name})...`;
+  }
+}
+
+function hideOutboundDialingBanner() {
+  const banner = document.getElementById('outboundDialBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+function initOutboundDialer() {
+  const form = document.getElementById('outboundDialForm');
+  const phoneInput = document.getElementById('dialPhoneNumber');
+  const nameInput = document.getElementById('dialContactName');
+  const goalInput = document.getElementById('dialCallGoal');
+  const notesInput = document.getElementById('dialLeadNotes');
+  const statusNotice = document.getElementById('dialStatusNotice');
+  const btnCancel = document.getElementById('btnCancelOutboundDial');
+  const btnSimulate = document.getElementById('btnDialSimulateStudio');
+  const presetChips = document.querySelectorAll('.preset-goal-chip');
+
+  // Preset chips click
+  presetChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      presetChips.forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      if (goalInput) {
+        goalInput.value = chip.dataset.goal || '';
+        goalInput.focus();
+      }
+    });
+  });
+
+  // Dial Cellular form submission
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const phone = phoneInput?.value?.trim();
+    const name = nameInput?.value?.trim() || '';
+    const goal = goalInput?.value?.trim() || '';
+    const notes = notesInput?.value?.trim() || '';
+
+    if (!phone) {
+      showDialNotice('Please enter a valid phone number.', 'error');
+      return;
+    }
+
+    showDialNotice('Triggering cellular dialer via Windows Phone Link...', 'success');
+
+    try {
+      const res = await fetch('/api/dial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone_number: phone,
+          contact_name: name,
+          call_goal: goal,
+          lead_notes: notes
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        showDialNotice(data.error || 'Failed to place call.', 'error');
+        return;
+      }
+
+      showOutboundDialingBanner(data.outbound);
+      showDialNotice(`Dialing placed! Windows Phone Link opened for ${phone}.`, 'success');
+    } catch (err) {
+      showDialNotice(`Error triggering dialer: ${err.message}`, 'error');
+    }
+  });
+
+  // Cancel Dialing
+  btnCancel?.addEventListener('click', async () => {
+    try {
+      await fetch('/api/dial/cancel', { method: 'POST' });
+      hideOutboundDialingBanner();
+      showDialNotice('Outbound call canceled.', 'success');
+      fetchStatusPolling();
+    } catch (err) {
+      console.warn('Failed to cancel dial:', err);
+    }
+  });
+
+  // Simulate in Studio
+  btnSimulate?.addEventListener('click', () => {
+    const phone = phoneInput?.value?.trim() || '+1 555-0199';
+    const name = nameInput?.value?.trim() || 'Alex Johnson';
+    const goal = goalInput?.value?.trim() || 'Follow up on business inquiry and qualify project requirements';
+    const notes = notesInput?.value?.trim() || '';
+
+    // Switch to Voice Studio tab
+    const tabStudio = document.getElementById('tabBtnStudio');
+    if (tabStudio) tabStudio.click();
+
+    // Build websocket URL with outbound query parameters
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/browser_call?outbound=1&name=${encodeURIComponent(name)}&goal=${encodeURIComponent(goal)}&notes=${encodeURIComponent(notes)}&phone=${encodeURIComponent(phone)}`;
+
+    // Start studio call
+    startBrowserVoiceCall(wsUrl);
+  });
+
+  function showDialNotice(text, type = 'success') {
+    if (!statusNotice) return;
+    statusNotice.textContent = text;
+    statusNotice.className = `dial-status-notice ${type}`;
+    statusNotice.classList.remove('hidden');
+    setTimeout(() => {
+      if (statusNotice) statusNotice.classList.add('hidden');
+    }, 5000);
+  }
+}
+
 
