@@ -272,11 +272,92 @@ def trigger_transfer_to_pc_async(timeout: float = 15.0):
     threading.Thread(target=ensure_call_transferred_to_pc, args=(timeout,), daemon=True).start()
 
 
+def keep_phone_link_minimized(duration: float = 8.0, restore_hwnd: int = None):
+    """
+    Background daemon that monitors top-level windows and immediately minimizes
+    Microsoft Phone Link if it attempts to pop up, ensuring it never steals focus
+    or covers the Callink web dashboard.
+    """
+    def _worker():
+        import ctypes
+        from ctypes import wintypes
+        import psutil
+
+        user32 = ctypes.windll.user32
+        target_restore = restore_hwnd
+        if not target_restore:
+            try:
+                target_restore = user32.GetForegroundWindow()
+            except Exception:
+                target_restore = None
+
+        end_time = time.time() + duration
+        while time.time() < end_time:
+            try:
+                def _enum_cb(hwnd, lparam):
+                    if not user32.IsWindow(hwnd):
+                        return True
+                    if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                        return True
+
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    try:
+                        pname = psutil.Process(pid.value).name().lower()
+                    except Exception:
+                        pname = ""
+
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    title = buf.value.lower()
+
+                    cls_buf = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(hwnd, cls_buf, 256)
+                    cls = cls_buf.value.lower()
+
+                    # Only target the Phone Link application window, avoid toasts or shell trays
+                    is_phone_link = False
+                    if "phoneexperiencehost" in pname:
+                        if (
+                            "winuidesktopwin32windowclass" in cls
+                            or "applicationframewindow" in cls
+                            or "phone link" in title
+                            or "your phone" in title
+                        ):
+                            is_phone_link = True
+                    elif "phone link" in title or "your phone" in title:
+                        is_phone_link = True
+
+                    if is_phone_link:
+                        rect = wintypes.RECT()
+                        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                        w = rect.right - rect.left
+                        h = rect.bottom - rect.top
+                        if w > 100 and h > 100:
+                            SW_FORCEMINIMIZE = 11
+                            SW_SHOWMINNOACTIVE = 7
+                            user32.ShowWindow(hwnd, SW_SHOWMINNOACTIVE)
+                            user32.ShowWindow(hwnd, SW_FORCEMINIMIZE)
+                            current_fg = user32.GetForegroundWindow()
+                            if current_fg == hwnd and target_restore and target_restore != hwnd:
+                                user32.SetForegroundWindow(target_restore)
+                    return True
+
+                cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
+                user32.EnumWindows(cb, 0)
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _auto_press_dial(phone_number: str):
     """
-    Background automation helper that brings Phone Link to focus,
-    locates the on-screen green 'Call' / 'Dial' button (ButtonCall),
-    automatically triggers the call, and ensures call audio transfers to PC.
+    Background automation helper that locates the on-screen green 'Call' / 'Dial'
+    button (ButtonCall), automatically triggers the call while keeping Phone Link
+    minimized in the background without stealing user focus.
     """
     import ctypes
     from ctypes import wintypes
@@ -347,66 +428,65 @@ def _auto_press_dial(phone_number: str):
 
         hwnd = _find_phone_link()
         if hwnd:
-            # Restore window if minimized
-            SW_RESTORE = 9
-            SW_SHOW = 5
-            user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.ShowWindow(hwnd, SW_SHOW)
+            # 1. First attempt to invoke ButtonCall directly via UIAutomation WITHOUT unminimizing or focusing
+            call_invoked = False
+            try:
+                import comtypes
+                import comtypes.client
+                from comtypes.gen.UIAutomationClient import (
+                    IUIAutomation, TreeScope_Descendants,
+                    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+                    UIA_InvokePatternId, IUIAutomationInvokePattern
+                )
+                comtypes.CoInitialize()
+                try:
+                    uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
+                    el = uia.ElementFromHandle(hwnd)
+                    if el:
+                        cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+                        btns = el.FindAll(TreeScope_Descendants, cond)
+                        if btns:
+                            for i in range(btns.Length):
+                                b = btns.GetElement(i)
+                                bid = (b.CurrentAutomationId or "").strip()
+                                bname = (b.CurrentName or "").strip().lower()
+                                if bid == "ButtonCall" or "call dialled number" in bname:
+                                    p = b.GetCurrentPattern(UIA_InvokePatternId)
+                                    if p:
+                                        inv = p.QueryInterface(IUIAutomationInvokePattern)
+                                        inv.Invoke()
+                                        call_invoked = True
+                                        print("[Outbound Dialer] Invoked ButtonCall directly via UIAutomation!")
+                                        # Immediately keep minimized
+                                        user32.ShowWindow(hwnd, 6) # SW_MINIMIZE
+                                        break
+                finally:
+                    try:
+                        comtypes.CoUninitialize()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-            # Bypass foreground lock via Alt key press
-            VK_MENU = 0x12
-            KEYEVENTF_KEYUP = 0x0002
-            user32.keybd_event(VK_MENU, 0, 0, 0)
-            user32.SetForegroundWindow(hwnd)
-            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-            user32.SetFocus(hwnd)
+            if call_invoked:
+                trigger_transfer_to_pc_async(timeout=12.0)
+                time.sleep(1.0)
+                if _is_call_active():
+                    return
+                continue
 
             rect = wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             w = rect.right - rect.left
             h = rect.bottom - rect.top
 
-            # Only proceed if window is restored and has normal dimensions
+            # 2. Window coordinate click fallback: Keypad green Call button center (84.5% X, 83.5% Y)
             if w > 200 and h > 200:
-                # 1. First attempt to invoke ButtonCall directly via UIAutomation if available
-                call_invoked = False
-                try:
-                    import comtypes
-                    import comtypes.client
-                    from comtypes.gen.UIAutomationClient import (
-                        IUIAutomation, TreeScope_Descendants,
-                        UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
-                        UIA_InvokePatternId, IUIAutomationInvokePattern
-                    )
-                    comtypes.CoInitialize()
-                    try:
-                        uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
-                        el = uia.ElementFromHandle(hwnd)
-                        if el:
-                            cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
-                            btns = el.FindAll(TreeScope_Descendants, cond)
-                            if btns:
-                                for i in range(btns.Length):
-                                    b = btns.GetElement(i)
-                                    bid = (b.CurrentAutomationId or "").strip()
-                                    bname = (b.CurrentName or "").strip().lower()
-                                    if bid == "ButtonCall" or "call dialled number" in bname:
-                                        p = b.GetCurrentPattern(UIA_InvokePatternId)
-                                        if p:
-                                            inv = p.QueryInterface(IUIAutomationInvokePattern)
-                                            inv.Invoke()
-                                            call_invoked = True
-                                            print("[Outbound Dialer] Invoked ButtonCall directly via UIAutomation!")
-                                            break
-                    finally:
-                        try:
-                            comtypes.CoUninitialize()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                orig_fg = user32.GetForegroundWindow()
 
-                # 2. Window coordinate click fallback: Keypad green Call button center (84.5% X, 83.5% Y)
+                SW_SHOWNOACTIVATE = 4
+                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+
                 click_x = rect.left + int(w * 0.845)
                 click_y = rect.top + int(h * 0.835)
 
@@ -428,9 +508,14 @@ def _auto_press_dial(phone_number: str):
                 time.sleep(0.03)
                 user32.keybd_event(VK_RETURN, 0, 2, 0)
 
-                # Restore original cursor position immediately
+                # Immediately minimize Phone Link back down
+                user32.ShowWindow(hwnd, 6) # SW_MINIMIZE
+
+                # Restore original cursor position and previous foreground window
                 time.sleep(0.03)
                 user32.SetCursorPos(orig_pt.x, orig_pt.y)
+                if orig_fg and orig_fg != hwnd:
+                    user32.SetForegroundWindow(orig_fg)
 
                 clicked_count += 1
                 print(f"[Outbound Dialer] Dispatched Call trigger at ({click_x}, {click_y}) [attempt {clicked_count}].")
@@ -452,11 +537,20 @@ def trigger_system_dialer(clean_number: str) -> bool:
     """
     Triggers Microsoft Phone Link specifically (bypassing PC VoIP software like MicroSIP,
     Skype, or Zoom that hijack the tel: protocol) and automatically enters and dials the number.
+    Ensures Phone Link stays minimized in the background without popping up or stealing focus.
     """
     if not clean_number:
         return False
 
     e164_number = format_e164_number(clean_number)
+
+    # Capture current foreground window (e.g. browser showing Callink dashboard)
+    orig_fg = None
+    try:
+        user32 = ctypes.windll.user32
+        orig_fg = user32.GetForegroundWindow()
+    except Exception:
+        pass
 
     # 1. Attempt Android ADB direct dial if adb device is connected
     try:
@@ -484,7 +578,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
     except Exception:
         pass
 
-    # 3. Attempt direct WinRT cellular dial via PhoneLine API
+    # 3. Attempt direct WinRT cellular dial via PhoneLine API (Silent background dial)
     try:
         import winrt.windows.applicationmodel.calls as calls_winrt
         import asyncio
@@ -510,10 +604,18 @@ def trigger_system_dialer(clean_number: str) -> bool:
             direct_dialed = pool.submit(_direct_winrt_dial, e164_number).result(timeout=2.0)
         if direct_dialed:
             print(f"[Outbound Dialer] Dispatched cellular call to {e164_number} directly via WinRT PhoneLine.")
+            # Trigger audio transfer to PC watcher in background
+            trigger_transfer_to_pc_async(timeout=20.0)
+            # Ensure Phone Link window never pops up or steals focus
+            keep_phone_link_minimized(duration=8.0, restore_hwnd=orig_fg)
+            return True
     except Exception as e:
         print(f"[Outbound Dialer] Direct WinRT line check: {e}")
 
-    # 4. Launch auto-dial helper in background thread to navigate Calls tab & press Enter/ButtonCall
+    # 4. Fallback path: Start Phone Link minimizer before launching Phone Link
+    keep_phone_link_minimized(duration=8.0, restore_hwnd=orig_fg)
+
+    # Launch auto-dial helper in background thread to navigate Calls tab & press Enter/ButtonCall
     threading.Thread(target=_auto_press_dial, args=(clean_number,), daemon=True).start()
 
     # 5. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
@@ -529,6 +631,11 @@ def trigger_system_dialer(clean_number: str) -> bool:
             async def _coro():
                 options = sys_winrt.LauncherOptions()
                 options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
+                try:
+                    import winrt.windows.ui.viewmanagement as vm
+                    options.desired_remaining_view = vm.ViewSizePreference.USE_NONE
+                except Exception:
+                    pass
                 uri = fnd_winrt.Uri(f"tel:{num}")
                 ok = await sys_winrt.Launcher.launch_uri_async(uri, options)
                 return ok
@@ -540,6 +647,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
 
         if phone_link_ok:
             print(f"[Outbound Dialer] Dispatched {e164_number} directly to Microsoft Phone Link.")
+            keep_phone_link_minimized(duration=8.0, restore_hwnd=orig_fg)
             return True
     except Exception as e:
         print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
@@ -548,6 +656,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
     try:
         os.startfile(f"ms-phone:{e164_number}")
         print(f"[Outbound Dialer] Dispatched via ms-phone URI for {e164_number}.")
+        keep_phone_link_minimized(duration=8.0, restore_hwnd=orig_fg)
         return True
     except Exception:
         pass
@@ -560,6 +669,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
         except Exception:
             webbrowser.open(tel_url)
         print(f"[Outbound Dialer] Triggered system telephony handler for {e164_number}.")
+        keep_phone_link_minimized(duration=8.0, restore_hwnd=orig_fg)
         return True
     except Exception as e:
         print(f"[Outbound Dialer Error] Failed to open telephony handler: {e}")
