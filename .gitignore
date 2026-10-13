@@ -25,3 +25,8 @@ dist/
 recordings/
 settings.json
 *.log
+
+# Business Knowledge Base uploads
+knowledge/docs/
+knowledge/documents.json
+

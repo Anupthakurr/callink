@@ -89,6 +89,7 @@ from call_recorder import (
     delete_recording,
     RECORDINGS_DIR,
 )
+import knowledge_manager as km
 import sounddevice as sd
 import re
 
@@ -208,6 +209,7 @@ def check_hfp_hardware():
 # pip install google-genai
 from google import genai
 from google.genai import types
+import knowledge_manager as km
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     BASE_DIR = sys._MEIPASS
@@ -349,6 +351,7 @@ class WebGatewayServer:
         self.state["recording_mode"] = "Synchronized Stereo WAV (L: Caller | R: AI)"
         self.state["stay_awake_active"] = True
         self.state["recordings_count"] = len(get_all_recordings())
+        self.state["knowledge_summary"] = km.get_knowledge_summary()
         self.state["server_uptime"] = int(time.time() - self.start_time)
 
         return dict(self.state)
@@ -365,6 +368,14 @@ class WebGatewayServer:
         self.app.router.add_post("/api/shutdown", self.handle_post_shutdown)
         self.app.router.add_get("/api/logs", self.handle_get_logs)
         self.app.router.add_post("/api/logs/clear", self.handle_clear_logs)
+
+        # Knowledge Base Document API Routes
+        self.app.router.add_get("/api/knowledge/documents", self.handle_get_knowledge_docs)
+        self.app.router.add_post("/api/knowledge/upload", self.handle_post_knowledge_upload)
+        self.app.router.add_delete("/api/knowledge/documents/{doc_id}", self.handle_delete_knowledge_doc)
+        self.app.router.add_post("/api/knowledge/documents/{doc_id}/toggle", self.handle_toggle_knowledge_doc)
+        self.app.router.add_get("/api/knowledge/documents/{doc_id}/preview", self.handle_get_knowledge_preview)
+        self.app.router.add_get("/api/knowledge/summary", self.handle_get_knowledge_summary)
 
         # WebSocket Routes
         self.app.router.add_get("/ws/telemetry", self.handle_ws_telemetry)
@@ -413,6 +424,80 @@ class WebGatewayServer:
         call_id = request.match_info.get("call_id")
         success = delete_recording(call_id)
         return web.json_response({"deleted": success, "call_id": call_id})
+
+    # =========================================================================
+    # Knowledge Base API Handlers
+    # =========================================================================
+
+    async def handle_get_knowledge_docs(self, request):
+        docs = km.get_all_documents()
+        summary = km.get_knowledge_summary()
+        return web.json_response({"documents": docs, "summary": summary})
+
+    async def handle_post_knowledge_upload(self, request):
+        try:
+            reader = await request.multipart()
+            uploaded_docs = []
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.filename:
+                    filename = part.filename
+                    content = await part.read()
+                    if content:
+                        doc = km.add_document(content, filename)
+                        uploaded_docs.append(doc)
+            summary = km.get_knowledge_summary()
+            await self.broadcast("knowledge_updated", {"summary": summary})
+            return web.json_response({
+                "success": True,
+                "uploaded": uploaded_docs,
+                "summary": summary
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def handle_delete_knowledge_doc(self, request):
+        doc_id = request.match_info.get("doc_id")
+        success = km.delete_document(doc_id)
+        summary = km.get_knowledge_summary()
+        await self.broadcast("knowledge_updated", {"summary": summary})
+        return web.json_response({
+            "success": success,
+            "doc_id": doc_id,
+            "summary": summary
+        })
+
+    async def handle_toggle_knowledge_doc(self, request):
+        doc_id = request.match_info.get("doc_id")
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        enabled = body.get("enabled") if "enabled" in body else None
+        new_state = km.toggle_document(doc_id, enabled)
+        summary = km.get_knowledge_summary()
+        await self.broadcast("knowledge_updated", {"summary": summary})
+        return web.json_response({
+            "success": new_state is not None,
+            "doc_id": doc_id,
+            "enabled": new_state,
+            "summary": summary
+        })
+
+    async def handle_get_knowledge_preview(self, request):
+        doc_id = request.match_info.get("doc_id")
+        doc = km.get_document_full(doc_id)
+        if not doc:
+            return web.Response(status=404, text="Document not found")
+        return web.json_response(doc)
+
+    async def handle_get_knowledge_summary(self, request):
+        summary = km.get_knowledge_summary()
+        prompt = km.build_knowledge_prompt()
+        return web.json_response({"summary": summary, "prompt": prompt})
 
     async def handle_get_settings(self, request):
         settings = load_settings()
@@ -576,7 +661,8 @@ class WebGatewayServer:
 
         settings = load_settings()
         voice_name = settings.get("voice_name", "Puck")
-        system_instruction = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+        base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+        system_instruction = km.get_effective_system_instruction(base_inst)
 
         # Create browser recorder
         recorder = CallRecorder(call_type="browser")

@@ -100,6 +100,7 @@ from google.genai import types
 
 from call_recorder import CallRecorder
 from web_server import WebGatewayServer, load_settings, DEFAULT_SETTINGS
+import knowledge_manager as km
 
 
 def ensure_gemini_api_key(allow_web_prompt: bool = True) -> str:
@@ -604,7 +605,8 @@ async def run_gemini_bridge(
 
     settings = load_settings()
     voice_name = settings.get("voice_name", "Puck")
-    system_instruction = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+    base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+    system_instruction = km.get_effective_system_instruction(base_inst)
     vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
 
     client = genai.Client(api_key=api_key)
@@ -1139,7 +1141,8 @@ async def main_async():
                 if api_key:
                     curr_settings = load_settings()
                     v_name = curr_settings.get("voice_name", "Puck")
-                    sys_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+                    base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+                    sys_inst = km.get_effective_system_instruction(base_inst)
                     live_cfg = types.LiveConnectConfig(
                         response_modalities=["AUDIO"],
                         system_instruction=sys_inst,

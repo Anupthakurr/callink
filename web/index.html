@@ -57,6 +57,11 @@
         Recordings
         <span id="recordingsBadge" class="tab-badge">—</span>
       </button>
+      <button class="nav-tab" data-tab="knowledge" id="tabBtnKnowledge">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Knowledge Base
+        <span id="knowledgeBadge" class="tab-badge">0</span>
+      </button>
       <button class="nav-tab" data-tab="settings" id="tabBtnSettings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         AI Persona
@@ -367,7 +372,132 @@
     </section>
 
     <!-- ========================================== -->
-    <!-- TAB 4: AI PERSONA & SETTINGS -->
+    <!-- TAB 4: BUSINESS KNOWLEDGE BASE & GROUNDING -->
+    <!-- ========================================== -->
+    <section id="paneKnowledge" class="tab-pane">
+      <div class="knowledge-container">
+        <!-- Knowledge Header -->
+        <div class="recordings-header-row">
+          <div class="header-title-box">
+            <h2>Business Knowledge Base & Grounding</h2>
+            <span class="recordings-count-tag" id="knowledgeActiveCountTag">0 Active / 0 Total Docs</span>
+          </div>
+          <div class="recordings-actions-box">
+            <button id="btnInspectPrompt" class="btn-sm btn-ghost" title="Inspect the exact system instruction passed to Gemini Live">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              Inspect Injected Prompt
+            </button>
+            <button id="btnRefreshKnowledge" class="btn-sm btn-ghost">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <!-- Knowledge Stats Bar -->
+        <div class="knowledge-stats-grid">
+          <div class="stat-card glass-card">
+            <div class="stat-card-header">
+              <span class="stat-label">TOTAL DOCUMENTS</span>
+              <div class="stat-icon-wrap stat-icon-cyan">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+            </div>
+            <div class="stat-val" id="statKnowledgeTotalDocs">0</div>
+            <div class="stat-sub">Catalogs, menus, FAQs & policies</div>
+          </div>
+
+          <div class="stat-card glass-card">
+            <div class="stat-card-header">
+              <span class="stat-label">ACTIVE IN LIVE CALLS</span>
+              <div class="stat-icon-wrap stat-icon-emerald">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              </div>
+            </div>
+            <div class="stat-val text-emerald" id="statKnowledgeActiveDocs">0</div>
+            <div class="stat-sub" id="statKnowledgeActiveSub">Ready for live call grounding</div>
+          </div>
+
+          <div class="stat-card glass-card">
+            <div class="stat-card-header">
+              <span class="stat-label">INDEXED WORDS</span>
+              <div class="stat-icon-wrap stat-icon-indigo">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+              </div>
+            </div>
+            <div class="stat-val" id="statKnowledgeTotalWords">0</div>
+            <div class="stat-sub" id="statKnowledgeWordsSub">~0 tokens context</div>
+          </div>
+
+          <div class="stat-card glass-card">
+            <div class="stat-card-header">
+              <span class="stat-label">CALL GROUNDING ENGINE</span>
+              <div class="stat-icon-wrap stat-icon-amber">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </div>
+            </div>
+            <div class="stat-val text-amber">0ms Latency</div>
+            <div class="stat-sub">Direct Gemini Live System Injection</div>
+          </div>
+        </div>
+
+        <!-- Upload Zone -->
+        <div class="knowledge-upload-section glass-card">
+          <div class="dropzone" id="knowledgeDropzone">
+            <input type="file" id="knowledgeFileInput" multiple accept=".pdf,.docx,.txt,.md,.csv,.json" class="file-input-hidden">
+            <div class="dropzone-inner">
+              <div class="upload-icon-pulse">
+                <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <h3 class="upload-title">Drop your business documents here, or <span class="upload-browse-link">browse files</span></h3>
+              <p class="upload-subtitle">Upload price lists, product catalogs, service menus, operational hours, FAQs, or refund policies</p>
+              <div class="upload-formats-row">
+                <span class="format-pill format-pdf">PDF</span>
+                <span class="format-pill format-docx">DOCX</span>
+                <span class="format-pill format-txt">TXT</span>
+                <span class="format-pill format-md">MARKDOWN</span>
+                <span class="format-pill format-csv">CSV</span>
+                <span class="format-pill format-json">JSON</span>
+                <span class="format-limit">Up to 20MB per file</span>
+              </div>
+            </div>
+            <!-- Uploading Overlay -->
+            <div id="knowledgeUploadProgress" class="upload-progress-overlay hidden">
+              <div class="upload-spinner"></div>
+              <div class="upload-status-text" id="uploadStatusText">Extracting text & indexing document...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Document Management List Header & Search -->
+        <div class="doc-list-toolbar">
+          <div class="doc-search-box">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="knowledgeSearchInput" placeholder="Filter documents by name or content..." class="doc-search-input">
+          </div>
+          <div class="doc-bulk-actions">
+            <button id="btnEnableAllDocs" class="btn-sm btn-ghost">Enable All</button>
+            <button id="btnDisableAllDocs" class="btn-sm btn-ghost">Disable All</button>
+          </div>
+        </div>
+
+        <!-- Document Cards Grid -->
+        <div id="knowledgeDocsGrid" class="knowledge-grid">
+          <div class="no-recordings" id="noKnowledgeDocsBox">
+            <div class="empty-icon">📄</div>
+            <h3>No business documents added yet</h3>
+            <p>Upload your price lists, service catalog, business hours, or FAQ documents above so Gemini Live can answer caller queries accurately on live calls.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- TAB 5: AI PERSONA & SETTINGS -->
     <!-- ========================================== -->
     <section id="paneSettings" class="tab-pane">
       <div class="settings-container">
@@ -497,6 +627,60 @@
       </div>
       <div id="modalTranscriptBody" class="modal-body">
         <!-- Rendered conversation bubbles -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Document Preview Modal -->
+  <div id="docPreviewModal" class="modal-backdrop hidden">
+    <div class="modal-box modal-lg glass-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span id="docPreviewBadge" class="format-pill format-pdf">PDF</span>
+          <h3 id="docPreviewTitle">Document Preview</h3>
+        </div>
+        <div class="modal-header-actions">
+          <button id="btnCopyDocText" class="btn-sm btn-ghost" title="Copy text to clipboard">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>
+            Copy Text
+          </button>
+          <button id="btnDocPreviewClose" class="btn-close">&times;</button>
+        </div>
+      </div>
+      <div class="modal-meta-bar" id="docPreviewMetaBar">
+        <span id="docPreviewWordCount">0 words</span>
+        <span class="meta-dot">•</span>
+        <span id="docPreviewSize">0 KB</span>
+        <span class="meta-dot">•</span>
+        <span id="docPreviewStatus" class="status-badge-inline active">Active in Live Calls</span>
+      </div>
+      <div id="docPreviewContent" class="modal-body code-preview-screen">
+        <!-- Rendered extracted text -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Injected Knowledge Prompt Inspector Modal -->
+  <div id="promptInspectorModal" class="modal-backdrop hidden">
+    <div class="modal-box modal-lg glass-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="format-pill format-ai">GEMINI LIVE</span>
+          <h3>Live Grounding Prompt Preview</h3>
+        </div>
+        <div class="modal-header-actions">
+          <button id="btnCopyPromptInspector" class="btn-sm btn-ghost" title="Copy full compiled prompt">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>
+            Copy Prompt
+          </button>
+          <button id="btnPromptInspectorClose" class="btn-close">&times;</button>
+        </div>
+      </div>
+      <div class="modal-meta-bar">
+        <span>The AI uses this exact system prompt during incoming cellular calls to answer customer questions accurately.</span>
+      </div>
+      <div id="promptInspectorContent" class="modal-body code-preview-screen">
+        <!-- Rendered compiled prompt -->
       </div>
     </div>
   </div>

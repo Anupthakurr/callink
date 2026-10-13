@@ -11,6 +11,8 @@ const appState = {
   callSeconds: 0,
   recordings: [],
   currentRecording: null,
+  knowledgeDocs: [],
+  knowledgeSearchTerm: '',
   audioPlayer: new Audio(),
   audioContext: null,
   audioSourceNode: null,
@@ -56,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTelemetryWebSocket();
   initMasterAudioPlayer();
   initRecordingsLibrary();
+  initKnowledgeBase();
   initStudioMode();
   initSettings();
   initTerminalConsole();
@@ -81,6 +84,8 @@ function initTabs() {
       appState.activeTab = tab.dataset.tab;
       if (appState.activeTab === 'recordings') {
         loadRecordings();
+      } else if (appState.activeTab === 'knowledge') {
+        loadKnowledgeDocuments();
       }
     });
   });
@@ -214,6 +219,11 @@ function handleTelemetryMessage(msg) {
     appendTerminalLogs(msg.entries);
   } else if (msg.type === 'terminal_logs_cleared') {
     clearTerminalUI();
+  } else if (msg.type === 'knowledge_updated' && msg.summary) {
+    updateKnowledgeStats(msg.summary);
+    if (appState.activeTab === 'knowledge') {
+      loadKnowledgeDocuments();
+    }
   }
 }
 
@@ -230,6 +240,10 @@ async function fetchStatusPolling() {
 
 function updateGatewayState(state) {
   if (!state) return;
+
+  if (state.knowledge_summary) {
+    updateKnowledgeStats(state.knowledge_summary);
+  }
 
   const statusPill = document.getElementById('statusPill');
   const statusText = document.getElementById('statusText');
@@ -1408,5 +1422,537 @@ function clearTerminalUI() {
   const badge = document.getElementById('terminalBadge');
   if (screen) screen.innerHTML = '';
   if (badge) badge.textContent = '0';
+}
+
+// ==========================================================================
+// Business Knowledge Base & Live Call Grounding
+// ==========================================================================
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatTimeAgo(isoString) {
+  if (!isoString) return '';
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    return isoString;
+  }
+}
+
+function initKnowledgeBase() {
+  const dropzone = document.getElementById('knowledgeDropzone');
+  const fileInput = document.getElementById('knowledgeFileInput');
+  const searchInput = document.getElementById('knowledgeSearchInput');
+  const btnRefresh = document.getElementById('btnRefreshKnowledge');
+  const btnEnableAll = document.getElementById('btnEnableAllDocs');
+  const btnDisableAll = document.getElementById('btnDisableAllDocs');
+  const btnInspectPrompt = document.getElementById('btnInspectPrompt');
+
+  // Modals
+  const docModal = document.getElementById('docPreviewModal');
+  const btnDocClose = document.getElementById('btnDocPreviewClose');
+  const promptModal = document.getElementById('promptInspectorModal');
+  const btnPromptClose = document.getElementById('btnPromptInspectorClose');
+  const btnCopyDoc = document.getElementById('btnCopyDocText');
+  const btnCopyPrompt = document.getElementById('btnCopyPromptInspector');
+
+  // Drag & Drop
+  if (dropzone && fileInput) {
+    ['dragenter', 'dragover'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.add('dragover');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('dragover');
+      });
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      if (dt && dt.files && dt.files.length) {
+        uploadKnowledgeFiles(dt.files);
+      }
+    });
+
+    dropzone.addEventListener('click', (e) => {
+      if (document.getElementById('knowledgeUploadProgress')?.classList.contains('hidden') === false) return;
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length) {
+        uploadKnowledgeFiles(e.target.files);
+      }
+    });
+  }
+
+  // Search input
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      appState.knowledgeSearchTerm = e.target.value.toLowerCase().trim();
+      filterAndRenderKnowledgeDocs();
+    });
+  }
+
+  // Refresh
+  if (btnRefresh) {
+    btnRefresh.addEventListener('click', () => {
+      loadKnowledgeDocuments();
+    });
+  }
+
+  // Bulk actions
+  if (btnEnableAll) {
+    btnEnableAll.addEventListener('click', () => bulkToggleDocs(true));
+  }
+  if (btnDisableAll) {
+    btnDisableAll.addEventListener('click', () => bulkToggleDocs(false));
+  }
+
+  // Inspect Prompt
+  if (btnInspectPrompt) {
+    btnInspectPrompt.addEventListener('click', openPromptInspector);
+  }
+
+  // Modal Closers
+  if (btnDocClose) {
+    btnDocClose.addEventListener('click', () => {
+      docModal?.classList.add('hidden');
+    });
+  }
+  if (btnPromptClose) {
+    btnPromptClose.addEventListener('click', () => {
+      promptModal?.classList.add('hidden');
+    });
+  }
+  [docModal, promptModal].forEach(m => {
+    if (m) {
+      m.addEventListener('click', (e) => {
+        if (e.target === m) m.classList.add('hidden');
+      });
+    }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      docModal?.classList.add('hidden');
+      promptModal?.classList.add('hidden');
+    }
+  });
+
+  // Copy Buttons
+  if (btnCopyDoc) {
+    btnCopyDoc.addEventListener('click', () => {
+      const text = document.getElementById('docPreviewContent')?.textContent || '';
+      if (text) {
+        navigator.clipboard.writeText(text).then(() => {
+          const original = btnCopyDoc.innerHTML;
+          btnCopyDoc.textContent = '✓ Copied!';
+          setTimeout(() => { btnCopyDoc.innerHTML = original; }, 1800);
+        });
+      }
+    });
+  }
+
+  if (btnCopyPrompt) {
+    btnCopyPrompt.addEventListener('click', () => {
+      const text = document.getElementById('promptInspectorContent')?.textContent || '';
+      if (text) {
+        navigator.clipboard.writeText(text).then(() => {
+          const original = btnCopyPrompt.innerHTML;
+          btnCopyPrompt.textContent = '✓ Copied!';
+          setTimeout(() => { btnCopyPrompt.innerHTML = original; }, 1800);
+        });
+      }
+    });
+  }
+
+  // Initial load
+  loadKnowledgeDocuments();
+}
+
+async function uploadKnowledgeFiles(fileList) {
+  const overlay = document.getElementById('knowledgeUploadProgress');
+  const statusText = document.getElementById('uploadStatusText');
+  const fileInput = document.getElementById('knowledgeFileInput');
+
+  if (!fileList || !fileList.length) return;
+
+  if (overlay) overlay.classList.remove('hidden');
+
+  const files = Array.from(fileList);
+  const formData = new FormData();
+  let validFilesCount = 0;
+
+  for (const file of files) {
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    const allowed = ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'];
+    if (!allowed.includes(ext)) {
+      alert(`Unsupported file format: "${file.name}". Please upload PDF, DOCX, TXT, MD, CSV, or JSON.`);
+      continue;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      alert(`File "${file.name}" exceeds the 20MB limit.`);
+      continue;
+    }
+    formData.append('file', file);
+    validFilesCount++;
+  }
+
+  if (validFilesCount === 0) {
+    if (overlay) overlay.classList.add('hidden');
+    if (fileInput) fileInput.value = '';
+    return;
+  }
+
+  if (statusText) {
+    statusText.textContent = `Extracting & indexing ${validFilesCount} document${validFilesCount > 1 ? 's' : ''}...`;
+  }
+
+  try {
+    const res = await fetch('/api/knowledge/upload', {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      await loadKnowledgeDocuments();
+      if (data.failed && data.failed.length > 0) {
+        const errors = data.failed.map(f => `${f.filename}: ${f.error}`).join('\n');
+        alert(`Some documents failed to process:\n${errors}`);
+      }
+    } else {
+      alert(`Upload failed: ${data.error || 'Server error'}`);
+    }
+  } catch (err) {
+    console.error('Error uploading knowledge documents:', err);
+    alert('Failed to upload document. Please check connection to gateway.');
+  } finally {
+    if (overlay) overlay.classList.add('hidden');
+    if (fileInput) fileInput.value = '';
+  }
+}
+
+async function loadKnowledgeDocuments() {
+  try {
+    const res = await fetch('/api/knowledge/documents');
+    if (!res.ok) return;
+    const data = await res.json();
+    appState.knowledgeDocs = data.documents || [];
+    updateKnowledgeStats(data.summary);
+    filterAndRenderKnowledgeDocs();
+  } catch (e) {
+    console.error('Failed to load knowledge documents:', e);
+  }
+}
+
+function updateKnowledgeStats(summary) {
+  if (!summary) return;
+
+  const totalDocs = summary.total_docs || 0;
+  const activeDocs = summary.active_docs || 0;
+  const totalWords = summary.total_words || 0;
+
+  const badge = document.getElementById('knowledgeBadge');
+  if (badge) badge.textContent = totalDocs;
+
+  const activeCountTag = document.getElementById('knowledgeActiveCountTag');
+  if (activeCountTag) {
+    activeCountTag.textContent = `${activeDocs} Active / ${totalDocs} Total Docs`;
+  }
+
+  const statTotal = document.getElementById('statKnowledgeTotalDocs');
+  if (statTotal) statTotal.textContent = totalDocs;
+
+  const statActive = document.getElementById('statKnowledgeActiveDocs');
+  if (statActive) statActive.textContent = activeDocs;
+
+  const statActiveSub = document.getElementById('statKnowledgeActiveSub');
+  if (statActiveSub) {
+    statActiveSub.textContent = activeDocs > 0 ? 'Ready for live call grounding' : 'No active docs for live calls';
+  }
+
+  const statWords = document.getElementById('statKnowledgeTotalWords');
+  if (statWords) statWords.textContent = totalWords.toLocaleString();
+
+  const statWordsSub = document.getElementById('statKnowledgeWordsSub');
+  if (statWordsSub) {
+    const estTokens = Math.round(totalWords * 1.3);
+    statWordsSub.textContent = `~${estTokens.toLocaleString()} tokens context`;
+  }
+}
+
+function filterAndRenderKnowledgeDocs() {
+  const grid = document.getElementById('knowledgeDocsGrid');
+  const noBox = document.getElementById('noKnowledgeDocsBox');
+  if (!grid) return;
+
+  const term = appState.knowledgeSearchTerm || '';
+  let filtered = appState.knowledgeDocs;
+
+  if (term) {
+    filtered = filtered.filter(doc => {
+      const fn = (doc.filename || '').toLowerCase();
+      const prev = (doc.preview || '').toLowerCase();
+      return fn.includes(term) || prev.includes(term);
+    });
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '';
+    if (noBox) {
+      if (term) {
+        grid.innerHTML = `
+          <div class="no-recordings" style="grid-column: 1 / -1;">
+            <div class="empty-icon">🔍</div>
+            <h3>No matching documents</h3>
+            <p>No uploaded documents match "${escapeHtml(term)}".</p>
+          </div>
+        `;
+      } else {
+        grid.appendChild(noBox);
+      }
+    }
+    return;
+  }
+
+  grid.innerHTML = '';
+
+  filtered.forEach(doc => {
+    const card = document.createElement('div');
+    card.className = `knowledge-card ${doc.enabled ? '' : 'card-disabled'}`;
+
+    const ext = (doc.file_type || '').toLowerCase().replace('.', '');
+    let formatPillClass = 'format-txt';
+    if (ext === 'pdf') formatPillClass = 'format-pdf';
+    else if (ext === 'docx') formatPillClass = 'format-docx';
+    else if (ext === 'md') formatPillClass = 'format-md';
+    else if (ext === 'csv') formatPillClass = 'format-csv';
+    else if (ext === 'json') formatPillClass = 'format-json';
+
+    const safeTitle = escapeHtml(doc.filename);
+    const safeSnippet = escapeHtml(doc.preview || 'No preview available.');
+    const sizeStr = formatFileSize(doc.size_bytes);
+    const wordsStr = (doc.word_count || 0).toLocaleString() + ' words';
+    const timeStr = formatTimeAgo(doc.uploaded_at);
+
+    card.innerHTML = `
+      <div class="doc-card-top">
+        <div class="doc-card-icon ${formatPillClass}">
+          ${ext.toUpperCase()}
+        </div>
+        <div class="doc-card-body">
+          <div class="doc-card-title" title="${safeTitle}">${safeTitle}</div>
+          <div class="doc-card-meta">
+            <span>${sizeStr}</span>
+            <span class="meta-dot">•</span>
+            <span>${wordsStr}</span>
+            <span class="meta-dot">•</span>
+            <span>${timeStr}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-card-preview-snippet" title="Extracted document text preview">
+        ${safeSnippet}
+      </div>
+
+      <div class="doc-card-bottom">
+        <div class="toggle-grounding-wrap">
+          <label class="switch">
+            <input type="checkbox" class="doc-toggle-chk" ${doc.enabled ? 'checked' : ''} data-id="${doc.id}">
+            <span class="slider"></span>
+          </label>
+          <span class="toggle-label ${doc.enabled ? 'active' : ''}">${doc.enabled ? 'Active in Calls' : 'Disabled'}</span>
+        </div>
+
+        <div class="doc-card-actions">
+          <button class="btn-sm btn-ghost btn-doc-preview" data-id="${doc.id}" title="Preview full extracted text">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            Preview
+          </button>
+          <button class="btn-sm btn-ghost btn-icon-danger btn-doc-delete" data-id="${doc.id}" data-filename="${safeTitle}" title="Delete document">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Event listeners
+    const chk = card.querySelector('.doc-toggle-chk');
+    chk?.addEventListener('change', (e) => {
+      toggleKnowledgeDoc(doc.id, e.target.checked);
+    });
+
+    const previewBtn = card.querySelector('.btn-doc-preview');
+    previewBtn?.addEventListener('click', () => {
+      openDocPreview(doc.id);
+    });
+
+    const deleteBtn = card.querySelector('.btn-doc-delete');
+    deleteBtn?.addEventListener('click', () => {
+      deleteKnowledgeDoc(doc.id, doc.filename);
+    });
+
+    grid.appendChild(card);
+  });
+}
+
+async function toggleKnowledgeDoc(docId, enabled) {
+  try {
+    const res = await fetch(`/api/knowledge/documents/${docId}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      await loadKnowledgeDocuments();
+    } else {
+      alert(`Failed to toggle document: ${data.error || 'Server error'}`);
+    }
+  } catch (e) {
+    console.error('Failed to toggle document:', e);
+  }
+}
+
+async function bulkToggleDocs(enableState) {
+  const docsToChange = appState.knowledgeDocs.filter(d => d.enabled !== enableState);
+  if (!docsToChange.length) return;
+
+  for (const doc of docsToChange) {
+    try {
+      await fetch(`/api/knowledge/documents/${doc.id}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enableState })
+      });
+    } catch (e) {}
+  }
+  await loadKnowledgeDocuments();
+}
+
+async function deleteKnowledgeDoc(docId, filename) {
+  if (!confirm(`Are you sure you want to delete "${filename}" from the Knowledge Base?`)) return;
+
+  try {
+    const res = await fetch(`/api/knowledge/documents/${docId}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (res.ok) {
+      await loadKnowledgeDocuments();
+    } else {
+      alert(`Failed to delete document: ${data.error || 'Server error'}`);
+    }
+  } catch (e) {
+    console.error('Failed to delete document:', e);
+    alert('Failed to delete document.');
+  }
+}
+
+async function openDocPreview(docId) {
+  const modal = document.getElementById('docPreviewModal');
+  const title = document.getElementById('docPreviewTitle');
+  const badge = document.getElementById('docPreviewBadge');
+  const wordCount = document.getElementById('docPreviewWordCount');
+  const size = document.getElementById('docPreviewSize');
+  const status = document.getElementById('docPreviewStatus');
+  const content = document.getElementById('docPreviewContent');
+
+  if (content) content.textContent = 'Loading document preview...';
+  if (modal) modal.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`/api/knowledge/documents/${docId}/preview`);
+    if (!res.ok) {
+      if (content) content.textContent = 'Error loading document content.';
+      return;
+    }
+    const data = await res.json();
+    const doc = data.document;
+
+    if (title) title.textContent = doc.filename;
+    const ext = (doc.file_type || '').toLowerCase().replace('.', '');
+    if (badge) {
+      badge.textContent = ext.toUpperCase();
+      badge.className = `format-pill format-${ext}`;
+    }
+    if (wordCount) wordCount.textContent = `${(doc.word_count || 0).toLocaleString()} words`;
+    if (size) size.textContent = formatFileSize(doc.size_bytes);
+    if (status) {
+      status.textContent = doc.enabled ? 'Active in Live Calls' : 'Disabled';
+      status.className = `status-badge-inline ${doc.enabled ? 'active' : 'disabled'}`;
+    }
+    if (content) content.textContent = doc.text || '(Empty document)';
+  } catch (e) {
+    console.error('Error previewing document:', e);
+    if (content) content.textContent = 'Failed to load preview.';
+  }
+}
+
+async function openPromptInspector() {
+  const modal = document.getElementById('promptInspectorModal');
+  const content = document.getElementById('promptInspectorContent');
+
+  if (content) content.textContent = 'Generating live compiled prompt...';
+  if (modal) modal.classList.remove('hidden');
+
+  try {
+    // Fetch settings to get base instruction
+    const settingsRes = await fetch('/api/settings');
+    const settings = settingsRes.ok ? await settingsRes.json() : {};
+    const basePrompt = settings.system_instruction || "You are a helpful AI voice assistant.";
+
+    // Active docs
+    const activeDocs = appState.knowledgeDocs.filter(d => d.enabled);
+
+    let compiledPrompt = basePrompt.trim();
+
+    if (activeDocs.length > 0) {
+      compiledPrompt += `\n\n==================================================\n`;
+      compiledPrompt += `BUSINESS KNOWLEDGE BASE & REFERENCE MATERIAL\n`;
+      compiledPrompt += `==================================================\n`;
+      compiledPrompt += `You have access to the verified business documents below. Use this information to accurately answer caller queries regarding pricing, offerings, policies, hours, and business details. If a caller asks about something covered here, answer based on these facts concisely and conversationally.\n\n`;
+
+      activeDocs.forEach((doc, idx) => {
+        compiledPrompt += `--- DOCUMENT ${idx + 1}: ${doc.filename} ---\n`;
+        compiledPrompt += `${doc.preview || ''}\n[... full document content injected into Gemini session ...]\n\n`;
+      });
+      compiledPrompt += `==================================================\nEND OF BUSINESS KNOWLEDGE BASE\n==================================================`;
+    } else {
+      compiledPrompt += `\n\n[No active business documents uploaded. Live call grounding is operating on base persona.]`;
+    }
+
+    if (content) content.textContent = compiledPrompt;
+  } catch (e) {
+    console.error('Error opening prompt inspector:', e);
+    if (content) content.textContent = 'Failed to load prompt preview.';
+  }
 }
 

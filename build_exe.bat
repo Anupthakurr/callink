@@ -28,10 +28,14 @@ pyinstaller --noconsole --onefile --clean ^
     --collect-all google.genai ^
     --collect-all aiohttp ^
     --collect-all pycaw ^
+    --collect-all PyPDF2 ^
+    --collect-all docx ^
     --copy-metadata google-genai ^
     --copy-metadata sounddevice ^
     --copy-metadata aiohttp ^
     --copy-metadata pycaw ^
+    --copy-metadata PyPDF2 ^
+    --copy-metadata python-docx ^
     gsm_gemini_gateway.py
 
 if %ERRORLEVEL% neq 0 (
