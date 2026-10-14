@@ -293,10 +293,8 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
         while time.time() - start_time < timeout:
             _attach_desktop()
 
-            # Re-check guards on every loop iteration
-            if _audio_transferred_to_pc or _transfer_clicked:
-                return True
-            if _last_transfer_action_time > 0 and (time.time() - _last_transfer_action_time < 20.0):
+            # Re-check guards: if already confirmed on PC, return True
+            if _audio_transferred_to_pc:
                 return True
 
             # Find all visible Phone Link and active call windows
@@ -304,7 +302,7 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
 
             # 1. Immediate Window Title Check
             for hwnd in candidate_hwnds:
-                if user32.IsWindowVisible(hwnd):
+                if user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
                     length = user32.GetWindowTextLengthW(hwnd)
                     if length > 0:
                         buf = ctypes.create_unicode_buffer(length + 1)
@@ -448,6 +446,15 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
 
                                     print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}', Text='{all_text}'). Transferring to PC...")
 
+                                    # 0. Ensure Phone Link is restored and brought to foreground
+                                    try:
+                                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                                        user32.SetForegroundWindow(hwnd)
+                                        user32.BringWindowToTop(hwnd)
+                                        time.sleep(0.15)
+                                    except Exception:
+                                        pass
+
                                     # 1. Hardware mouse click directly to button center
                                     clicked = False
                                     try:
@@ -459,15 +466,33 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                             cy = rect.top + bh // 2
                                             orig_pt = wintypes.POINT()
                                             user32.GetCursorPos(ctypes.byref(orig_pt))
+
+                                            # Set focus to button
+                                            try:
+                                                b.SetFocus()
+                                            except Exception:
+                                                pass
+
+                                            # Hover cursor over button center
                                             user32.SetCursorPos(cx, cy)
-                                            time.sleep(0.05)
+                                            time.sleep(0.12)
+
+                                            # Left click down and up
                                             user32.mouse_event(0x0002, 0, 0, 0, 0)
-                                            time.sleep(0.05)
+                                            time.sleep(0.08)
                                             user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                            time.sleep(0.12)
+
+                                            # Dispatch Space key while focused
+                                            user32.keybd_event(0x20, 0, 0, 0)
                                             time.sleep(0.05)
+                                            user32.keybd_event(0x20, 0, 2, 0)
+                                            time.sleep(0.10)
+
+                                            # Restore original cursor position
                                             user32.SetCursorPos(orig_pt.x, orig_pt.y)
                                             clicked = True
-                                            print(f"[Audio Router] Hardware mouse click dispatched to Transfer button at ({cx}, {cy}).")
+                                            print(f"[Audio Router] Hardware mouse click and Space dispatched to Transfer button at ({cx}, {cy}).")
                                     except Exception as ex:
                                         print(f"[Audio Router] Mouse click notice: {ex}")
 
@@ -482,7 +507,7 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
 
                                     _transfer_clicked = True
                                     _last_transfer_action_time = time.time()
-                                    time.sleep(1.2)
+                                    time.sleep(1.5)
                         except Exception:
                             pass
                 finally:
@@ -490,7 +515,7 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
             except Exception:
                 pass
 
-            time.sleep(0.3)
+            time.sleep(0.5)
 
         return _audio_transferred_to_pc
     finally:
@@ -668,6 +693,50 @@ def is_phone_link_call_present() -> bool:
                             if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
                                 return True
                             if any(k in bname for k in ["transfer to pc", "transfer to phone", "to pc", "to phone"]):
+                                return True
+                except Exception:
+                    pass
+            return False
+        finally:
+            _safe_couninit(co_ok)
+    except Exception:
+        return False
+
+
+def is_phone_link_call_ended() -> bool:
+    """
+    Checks if Microsoft Phone Link explicitly displays 'Call ended', 'Call dropped',
+    or 'Call disconnected' in its active UI.
+    Returns True if an explicit call termination message is visible.
+    """
+    hwnds = find_all_phone_link_windows()
+    if not hwnds:
+        return False
+
+    try:
+        import comtypes
+        import comtypes.client
+        from comtypes.gen.UIAutomationClient import (
+            IUIAutomation, TreeScope_Descendants,
+            UIA_TextControlTypeId, UIA_ControlTypePropertyId
+        )
+
+        co_ok = _safe_coinit()
+        try:
+            uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
+            txt_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_TextControlTypeId)
+
+            for hwnd in hwnds:
+                try:
+                    el = uia.ElementFromHandle(hwnd)
+                    if not el:
+                        continue
+                    texts = el.FindAll(TreeScope_Descendants, txt_cond)
+                    if texts:
+                        for i in range(texts.Length):
+                            t = texts.GetElement(i)
+                            name = (t.CurrentName or "").strip().lower()
+                            if any(e in name for e in ["call ended", "call dropped", "call disconnected", "call finished"]):
                                 return True
                 except Exception:
                     pass

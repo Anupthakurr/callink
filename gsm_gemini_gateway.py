@@ -1684,6 +1684,15 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
             stop_event.set()
             break
 
+        # Check if Phone Link explicitly reports call ended
+        try:
+            if dialer.is_phone_link_call_ended():
+                print("\n[Phone Link] Explicit call ended event detected.")
+                stop_event.set()
+                break
+        except Exception:
+            pass
+
         try:
             pcm_active = PhoneCallManager.get_is_call_active()
         except Exception:
@@ -1710,9 +1719,15 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
                 else:
                     inactive_count += 1
             else:
-                inactive_count += 1
+                # Call was connected or inbound:
+                # If Bluetooth HFP is healthy and delivering audio frames, call is actively ongoing!
+                if bridge.is_healthy() and bridge.total_input_frames > 0:
+                    inactive_count = 0
+                else:
+                    inactive_count += 1
 
-            threshold = 30 if bridge.is_healthy() else 25
+            # At 1.0s interval, threshold=25 means 25 continuous seconds of silence & no call presence
+            threshold = 25
             if inactive_count >= threshold:
                 print("\nCellular call became inactive (call ended).")
                 stop_event.set()
@@ -1746,7 +1761,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
                     stop_event.set()
                     break
 
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(1.0)
 
 
 async def main_async():
