@@ -293,8 +293,8 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
         while time.time() - start_time < timeout:
             _attach_desktop()
 
-            # Re-check guards: if already confirmed on PC, return True
-            if _audio_transferred_to_pc:
+            # Re-check guards: if already confirmed on PC or clicked once, exit immediately!
+            if _audio_transferred_to_pc or _transfer_clicked:
                 return True
 
             # Find all visible Phone Link and active call windows
@@ -433,8 +433,8 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                     is_transfer_btn = True
 
                                 if is_transfer_btn:
-                                    # Hard guard: If already confirmed on PC, never click again!
-                                    if _audio_transferred_to_pc:
+                                    # Hard guard: If already confirmed on PC or already clicked once, NEVER click again!
+                                    if _audio_transferred_to_pc or _transfer_clicked:
                                         return True
 
                                     # Check if the button is enabled (not mid-transition)
@@ -455,7 +455,7 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                     except Exception:
                                         pass
 
-                                    # 1. Hardware mouse click directly to button center
+                                    # 1. Exactly ONE clean hardware mouse click directly to button center
                                     clicked = False
                                     try:
                                         rect = b.CurrentBoundingRectangle
@@ -467,47 +467,27 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                             orig_pt = wintypes.POINT()
                                             user32.GetCursorPos(ctypes.byref(orig_pt))
 
-                                            # Set focus to button
-                                            try:
-                                                b.SetFocus()
-                                            except Exception:
-                                                pass
-
-                                            # Hover cursor over button center
+                                            # Move cursor to button center and pause to let hover settle
                                             user32.SetCursorPos(cx, cy)
-                                            time.sleep(0.12)
-
-                                            # Left click down and up
-                                            user32.mouse_event(0x0002, 0, 0, 0, 0)
                                             time.sleep(0.08)
-                                            user32.mouse_event(0x0004, 0, 0, 0, 0)
-                                            time.sleep(0.12)
 
-                                            # Dispatch Space key while focused
-                                            user32.keybd_event(0x20, 0, 0, 0)
-                                            time.sleep(0.05)
-                                            user32.keybd_event(0x20, 0, 2, 0)
-                                            time.sleep(0.10)
+                                            # Exactly ONE click (down + hold + up)
+                                            user32.mouse_event(0x0002, 0, 0, 0, 0)
+                                            time.sleep(0.06)
+                                            user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                            time.sleep(0.15)
 
                                             # Restore original cursor position
                                             user32.SetCursorPos(orig_pt.x, orig_pt.y)
                                             clicked = True
-                                            print(f"[Audio Router] Hardware mouse click and Space dispatched to Transfer button at ({cx}, {cy}).")
+                                            print(f"[Audio Router] Dispatched single hardware click to Transfer button at ({cx}, {cy}).")
                                     except Exception as ex:
                                         print(f"[Audio Router] Mouse click notice: {ex}")
 
-                                    # 2. Also invoke UI Automation pattern as secondary trigger
-                                    try:
-                                        pattern = b.GetCurrentPattern(UIA_InvokePatternId)
-                                        if pattern:
-                                            invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
-                                            invoker.Invoke()
-                                    except Exception:
-                                        pass
-
+                                    # Hard guard: Lock out further clicks immediately so it NEVER clicks twice or toggles back to phone!
                                     _transfer_clicked = True
                                     _last_transfer_action_time = time.time()
-                                    time.sleep(1.5)
+                                    time.sleep(2.0)
                         except Exception:
                             pass
                 finally:
