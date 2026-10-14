@@ -284,7 +284,6 @@ def is_phone_link_call_connected() -> bool:
             UIA_TextControlTypeId, UIA_ButtonControlTypeId,
             UIA_ControlTypePropertyId
         )
-        import re
 
         co_ok = _safe_coinit()
         try:
@@ -298,10 +297,24 @@ def is_phone_link_call_connected() -> bool:
                     if not el:
                         continue
 
-                    # Check text elements first: active banner or duration timer proves connected!
+                    # Check for in-call buttons (End call button ONLY exists during an active call session)
+                    btns = el.FindAll(TreeScope_Descendants, btn_cond)
+                    has_end_btn = False
+                    has_transfer_btn = False
+                    if btns:
+                        for i in range(btns.Length):
+                            b = btns.GetElement(i)
+                            bid = (b.CurrentAutomationId or "").strip()
+                            bname = (b.CurrentName or "").strip().lower()
+                            if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
+                                has_end_btn = True
+                                break
+                            if any(k in bname for k in ["transfer to pc", "transfer to phone"]):
+                                has_transfer_btn = True
+
+                    # Check text elements strictly for genuine active call banner
                     texts = el.FindAll(TreeScope_Descendants, txt_cond)
                     is_ringing = False
-                    has_timer = False
                     has_incall_banner = False
 
                     if texts:
@@ -314,34 +327,9 @@ def is_phone_link_call_connected() -> bool:
                                 return True
                             if any(k in name for k in ["currently in a call", "in a call on", "on your mobile device"]):
                                 has_incall_banner = True
-                            # Look for active call duration timer (e.g. 0:01, 00:01, 01:01, 12:45)
-                            m = re.match(r"^\d{1,2}:\d{2}$", name)
-                            if m:
-                                parts = name.split(":")
-                                sec = int(parts[0]) * 60 + int(parts[1])
-                                if sec > 0:
-                                    has_timer = True
 
-                    if has_timer:
-                        return True
-                    if has_incall_banner and not is_ringing:
-                        return True
-
-                    # Check for in-call buttons
-                    btns = el.FindAll(TreeScope_Descendants, btn_cond)
-                    has_incall_btn = False
-                    if btns:
-                        for i in range(btns.Length):
-                            b = btns.GetElement(i)
-                            bid = (b.CurrentAutomationId or "").strip()
-                            bname = (b.CurrentName or "").strip().lower()
-                            if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
-                                has_incall_btn = True
-                                break
-                            if any(k in bname for k in ["transfer to pc", "transfer to phone"]):
-                                return True
-
-                    if has_incall_btn and not is_ringing:
+                    # Active connected call strictly requires in-call banner, End Call button, or active transfer button, AND not ringing
+                    if (has_incall_banner or has_end_btn or has_transfer_btn) and not is_ringing:
                         return True
                 except Exception:
                     pass
@@ -356,8 +344,8 @@ def is_phone_link_call_connected() -> bool:
 def is_phone_link_call_present() -> bool:
     """
     Checks if Microsoft Phone Link currently displays an active call session
-    (either dialing, ringing, or connected, indicated by call controls, in-call banner,
-    or window titled 'Call on PC' / 'Call on mobile device').
+    (either dialing, ringing, or connected, indicated by in-call banner,
+    window titled 'Call on PC' / 'Call on mobile device', or End Call button).
     Returns True if an active cellular call session exists in Phone Link.
     """
     hwnds = find_all_phone_link_windows()
@@ -374,7 +362,7 @@ def is_phone_link_call_present() -> bool:
             buf = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(h, buf, length + 1)
             title = buf.value.lower()
-            if any(k in title for k in ["call on pc", "call on mobile", "call on"]):
+            if any(k in title for k in ["call on pc", "call on mobile"]):
                 return True
 
     # 2. UI Automation Inspection across all Phone Link windows
@@ -397,7 +385,7 @@ def is_phone_link_call_present() -> bool:
                     if not el:
                         continue
 
-                    # Check text elements for active in-call banner or timer
+                    # Check text elements strictly for genuine in-call banner
                     texts = el.FindAll(TreeScope_Descendants, txt_cond)
                     if texts:
                         for i in range(texts.Length):
@@ -405,14 +393,11 @@ def is_phone_link_call_present() -> bool:
                             tname = (t.CurrentName or "").strip().lower()
                             if any(k in tname for k in [
                                 "currently in a call", "in a call on", "on your mobile device",
-                                "call on pc", "call on mobile", "transfer to pc", "transfer to phone"
+                                "call on pc", "call on mobile"
                             ]):
                                 return True
-                            import re
-                            if re.match(r"^\d{1,2}:\d{2}$", tname):
-                                return True
 
-                    # Check buttons
+                    # Check buttons strictly for in-call buttons
                     btns = el.FindAll(TreeScope_Descendants, btn_cond)
                     if btns:
                         for i in range(btns.Length):
@@ -421,7 +406,7 @@ def is_phone_link_call_present() -> bool:
                             bname = (b.CurrentName or "").strip().lower()
                             if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
                                 return True
-                            if any(k in bname for k in ["transfer to pc", "transfer to phone", "to pc", "to phone"]):
+                            if any(k in bname for k in ["transfer to pc", "transfer to phone"]):
                                 return True
                 except Exception:
                     pass
