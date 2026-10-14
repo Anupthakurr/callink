@@ -92,13 +92,14 @@ def _safe_couninit(did_init: bool):
             pass
 
 
-def find_phone_link_window():
-    """Locates any active top-level Microsoft Phone Link window handle."""
+def find_all_phone_link_windows() -> list:
+    """Locates all visible Microsoft Phone Link and active in-call popup window handles."""
     import ctypes
     from ctypes import wintypes
+    import os
     user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
 
-    # Attach thread to interactive desktop
     hdesk = None
     try:
         hwinsta = user32.OpenWindowStationW("WinSta0", False, 0x10000000)
@@ -110,36 +111,64 @@ def find_phone_link_window():
     except Exception:
         pass
 
-    # Check WinUI 3 desktop class (Windows 11 Phone Link)
-    h = user32.FindWindowW("WinUIDesktopWin32WindowClass", "Phone Link")
-    if h:
-        return h
-    # Check title only
-    h = user32.FindWindowW(None, "Phone Link")
-    if h:
-        return h
-    # Check UWP class (Windows 10 Your Phone)
-    h = user32.FindWindowW("ApplicationFrameWindow", "Phone Link")
-    if h:
-        return h
-    # Desktop window scan
-    found = [None]
+    def _get_proc(h):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        hProc = kernel32.OpenProcess(0x1000, False, pid.value)
+        if not hProc:
+            return ""
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size))
+        kernel32.CloseHandle(hProc)
+        return os.path.basename(buf.value).lower()
+
+    found_hwnds = []
+
     def _enum_cb(hwnd, lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pname = _get_proc(hwnd)
+        if pname in ["phoneexperiencehost.exe", "yourphone.exe", "applicationframehost.exe"]:
+            if hwnd not in found_hwnds:
+                found_hwnds.append(hwnd)
+            return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length > 0:
             buf = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, buf, length + 1)
             val = buf.value.lower()
-            if "phone link" in val or "your phone" in val:
-                found[0] = hwnd
-                return False
+            if any(k in val for k in ["phone link", "your phone", "call on pc", "call on mobile", "calls"]):
+                if hwnd not in found_hwnds:
+                    found_hwnds.append(hwnd)
         return True
+
     cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
     if hdesk:
         user32.EnumDesktopWindows(hdesk, cb, 0)
-    if not found[0]:
-        user32.EnumWindows(cb, 0)
-    return found[0]
+    user32.EnumWindows(cb, 0)
+    return found_hwnds
+
+
+def find_phone_link_window():
+    """Locates the primary active Microsoft Phone Link window handle, prioritizing in-call popups."""
+    hwnds = find_all_phone_link_windows()
+    if not hwnds:
+        return None
+    import ctypes
+    user32 = ctypes.windll.user32
+    # Prioritize active in-call window ("call on pc", "call on mobile")
+    for h in hwnds:
+        length = user32.GetWindowTextLengthW(h)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(h, buf, length + 1)
+            val = buf.value.lower()
+            if "call on" in val:
+                return h
+    return hwnds[0]
 
 
 def ensure_phone_link_visible():
@@ -197,8 +226,8 @@ def get_last_transfer_time() -> float:
 def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
     """
     Monitors Phone Link during an active or outgoing cellular call and ensures
-    call audio is routed to PC (switching the button to 'Send call to mobile device' or 'Transfer to phone').
-    If the button already indicates PC routing ('Transfer to phone', 'Send call to mobile device'),
+    call audio is routed to PC (switching the button to 'Transfer to phone' or 'Send call to mobile device').
+    If the window or button already indicates PC routing ('Call on PC', 'Transfer to phone'),
     it marks success and NEVER clicks.
     If 'Transfer to PC' is detected, it triggers the transfer at most ONCE per call to prevent
     any toggle loops or fighting with the user/system.
@@ -211,10 +240,10 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
 
     try:
         now = time.time()
-        # If already confirmed on PC or already clicked, no need to re-trigger
+        # Hard guard: If already confirmed on PC or already clicked, never click again during this call
         if _audio_transferred_to_pc:
             return True
-        if _transfer_clicked and (now - _last_transfer_action_time < 8.0):
+        if _transfer_clicked:
             return True
 
         import ctypes
@@ -238,62 +267,29 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
             except Exception:
                 return None
 
-        def _get_proc_name(h):
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-            if not pid.value:
-                return ""
-            hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-            if not hProc:
-                return ""
-            buf = ctypes.create_unicode_buffer(1024)
-            size = wintypes.DWORD(1024)
-            kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size))
-            kernel32.CloseHandle(hProc)
-            return os.path.basename(buf.value)
-
         start_time = time.time()
         while time.time() - start_time < timeout:
-            hdesk = _attach_desktop()
+            _attach_desktop()
 
-            # Find visible Phone Link windows and Windows Call toast popups
-            candidate_hwnds = []
-            for title_pattern in [
-                "Call on mobile device", "Call on mobile", "Phone Link",
-                "Calls", "Your Phone"
-            ]:
-                h_match = user32.FindWindowW(None, title_pattern)
-                if h_match and h_match not in candidate_hwnds:
-                    candidate_hwnds.append(h_match)
+            # Find all visible Phone Link and active call windows
+            candidate_hwnds = find_all_phone_link_windows()
 
-            pl_h1 = user32.FindWindowW("WinUIDesktopWin32WindowClass", None)
-            if pl_h1 and pl_h1 not in candidate_hwnds:
-                candidate_hwnds.append(pl_h1)
-
-            def _enum_cb(h, lp):
-                pname = _get_proc_name(h).lower()
-                if pname in ["phoneexperiencehost.exe", "yourphone.exe", "applicationframehost.exe"]:
-                    if h not in candidate_hwnds:
-                        candidate_hwnds.append(h)
-                    return True
-                if user32.IsWindowVisible(h):
-                    if pname in ["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "code.exe", "antigravity ide.exe"]:
-                        return True
-                    length = user32.GetWindowTextLengthW(h)
+            # 1. Immediate Window Title Check: "Call on PC" means audio is 100% already on PC!
+            for hwnd in candidate_hwnds:
+                if user32.IsWindowVisible(hwnd):
+                    length = user32.GetWindowTextLengthW(hwnd)
                     if length > 0:
                         buf = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(h, buf, length + 1)
-                        title = buf.value.lower()
-                        if any(k in title for k in ["call on mobile", "mobile device", "phone link", "your phone", "calls"]):
-                            if h not in candidate_hwnds:
-                                candidate_hwnds.append(h)
-                return True
+                        user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title_val = buf.value.lower()
+                        if "call on pc" in title_val or "on pc" in title_val:
+                            print(f"[Audio Router] Phone Link window title confirms call audio is already routed to PC ('{buf.value}').")
+                            _audio_transferred_to_pc = True
+                            _transfer_clicked = True
+                            _last_transfer_action_time = time.time()
+                            return True
 
-            cb = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_cb)
-            if hdesk:
-                user32.EnumDesktopWindows(hdesk, cb, 0)
-            user32.EnumWindows(cb, 0)
-
+            # 2. UI Automation Inspection
             try:
                 import comtypes
                 import comtypes.client
@@ -349,12 +345,12 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                 all_text = " ".join([name_l, help_l] + child_texts).strip()
 
                                 # (A) ALREADY ON PC check:
-                                # "transfer to phone", "send call to mobile", "send to phone", "send to mobile", "use phone"
+                                # When audio is routed to PC, Phone Link button offers to transfer back to phone!
                                 is_on_pc = False
                                 if any(k in all_text for k in [
-                                    "send call to mobile", "transfer to phone", "transfer to mobile",
-                                    "send to mobile", "send to phone", "use phone", "mobile device",
-                                    "call on mobile", "phone call"
+                                    "transfer to phone", "transfer call to phone",
+                                    "send call to mobile", "send to phone", "send to mobile",
+                                    "to phone", "to mobile", "use phone"
                                 ]):
                                     is_on_pc = True
 
@@ -370,22 +366,30 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                         pass
 
                                 if is_on_pc:
-                                    print(f"[Audio Router] Call audio is already routed to PC (button: '{name or aid}').")
+                                    print(f"[Audio Router] Call audio is already routed to PC (button indicates: '{all_text}').")
                                     _audio_transferred_to_pc = True
+                                    _transfer_clicked = True
                                     _last_transfer_action_time = time.time()
                                     return True
 
                                 # (B) TRANSFER TO PC check:
-                                # MUST contain "pc" or "computer" AND MUST NOT contain "phone" or "mobile"
+                                # Target button to transfer audio from phone to PC
                                 is_transfer_btn = False
-                                if ("pc" in all_text or "computer" in all_text) and not any(m in all_text for m in ["phone", "mobile"]):
+                                if ("to pc" in all_text or "transfer call to pc" in all_text or "transfer to pc" in all_text) and not any(m in all_text for m in ["to phone", "to mobile"]):
+                                    is_transfer_btn = True
+                                elif ("pc" in all_text or "computer" in all_text) and not any(m in all_text for m in ["phone", "mobile"]):
                                     is_transfer_btn = True
 
                                 if is_transfer_btn:
-                                    # If already clicked once during this call, do not click again!
+                                    # Hard guard: If already clicked once, NEVER click again!
                                     if _transfer_clicked:
                                         _audio_transferred_to_pc = True
                                         return True
+
+                                    # Immediately set flags BEFORE invoking to prevent any re-entry
+                                    _transfer_clicked = True
+                                    _audio_transferred_to_pc = True
+                                    _last_transfer_action_time = time.time()
 
                                     print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Transferring to PC...")
                                     clicked = False
@@ -421,11 +425,8 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                         except Exception as ex:
                                             print(f"[Audio Router] Mouse click fallback notice: {ex}")
 
-                                    _transfer_clicked = True
-                                    _last_transfer_action_time = time.time()
-                                    _audio_transferred_to_pc = True
                                     time.sleep(0.8)
-                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Send call to mobile device'.")
+                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Transfer to phone'.")
                                     return True
                         except Exception:
                             pass
@@ -444,13 +445,28 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
 def is_phone_link_call_connected() -> bool:
     """
     Checks if Microsoft Phone Link currently displays an in-call session with
-    active duration timer (e.g. 00:01, 00:05), or in-call controls without 'Calling...' text.
+    active duration timer (e.g. 00:01, 00:05), or in-call controls without 'Calling...' text,
+    or title 'Call on PC'.
     Returns True if recipient has picked up/call is connected, False if ringing or idle.
     """
-    hwnd = find_phone_link_window()
-    if not hwnd:
+    hwnds = find_all_phone_link_windows()
+    if not hwnds:
         return False
 
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    # 1. Immediate Title Check: "Call on PC" proves call was answered and transferred to PC!
+    for h in hwnds:
+        length = user32.GetWindowTextLengthW(h)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(h, buf, length + 1)
+            title = buf.value.lower()
+            if "call on pc" in title:
+                return True
+
+    # 2. UI Automation Inspection across all Phone Link windows
     try:
         import comtypes
         import comtypes.client
@@ -464,50 +480,54 @@ def is_phone_link_call_connected() -> bool:
         co_ok = _safe_coinit()
         try:
             uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
-            el = uia.ElementFromHandle(hwnd)
-            if not el:
-                return False
-
-            # Check for in-call buttons (End call button indicates call session exists)
             btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
-            btns = el.FindAll(TreeScope_Descendants, btn_cond)
-            has_incall_btn = False
-            if btns:
-                for i in range(btns.Length):
-                    b = btns.GetElement(i)
-                    bid = (b.CurrentAutomationId or "").strip()
-                    bname = (b.CurrentName or "").strip().lower()
-                    if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
-                        has_incall_btn = True
-                        break
-
-            if not has_incall_btn:
-                return False
-
-            # In-call controls exist! Now check text elements to see if it is still ringing or answered
             txt_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_TextControlTypeId)
-            texts = el.FindAll(TreeScope_Descendants, txt_cond)
-            is_ringing = False
-            has_timer = False
 
-            if texts:
-                for i in range(texts.Length):
-                    t = texts.GetElement(i)
-                    name = (t.CurrentName or "").strip().lower()
-                    if any(c in name for c in ["calling", "dialing", "connecting"]):
-                        is_ringing = True
-                    # Look for active call duration timer (e.g. 00:01, 0:05, 01:23)
-                    m = re.match(r"^0?(\d):(\d{2})$", name)
-                    if m:
-                        sec = int(m.group(1)) * 60 + int(m.group(2))
-                        if sec > 0:
-                            has_timer = True
+            for hwnd in hwnds:
+                try:
+                    el = uia.ElementFromHandle(hwnd)
+                    if not el:
+                        continue
 
-            if has_timer:
-                return True
-            if has_incall_btn and not is_ringing:
-                # In-call controls present and no "calling..." status text means connected
-                return True
+                    # Check for in-call buttons (End call button indicates call session exists)
+                    btns = el.FindAll(TreeScope_Descendants, btn_cond)
+                    has_incall_btn = False
+                    if btns:
+                        for i in range(btns.Length):
+                            b = btns.GetElement(i)
+                            bid = (b.CurrentAutomationId or "").strip()
+                            bname = (b.CurrentName or "").strip().lower()
+                            if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
+                                has_incall_btn = True
+                                break
+
+                    if not has_incall_btn:
+                        continue
+
+                    # In-call controls exist! Now check text elements to see if it is still ringing or answered
+                    texts = el.FindAll(TreeScope_Descendants, txt_cond)
+                    is_ringing = False
+                    has_timer = False
+
+                    if texts:
+                        for i in range(texts.Length):
+                            t = texts.GetElement(i)
+                            name = (t.CurrentName or "").strip().lower()
+                            if any(c in name for c in ["calling", "dialing", "connecting"]):
+                                is_ringing = True
+                            # Look for active call duration timer (e.g. 00:01, 0:05, 01:23)
+                            m = re.match(r"^0?(\d):(\d{2})$", name)
+                            if m:
+                                sec = int(m.group(1)) * 60 + int(m.group(2))
+                                if sec > 0:
+                                    has_timer = True
+
+                    if has_timer:
+                        return True
+                    if has_incall_btn and not is_ringing:
+                        return True
+                except Exception:
+                    pass
 
             return False
         finally:
@@ -519,13 +539,28 @@ def is_phone_link_call_connected() -> bool:
 def is_phone_link_call_present() -> bool:
     """
     Checks if Microsoft Phone Link currently displays an active call session window
-    (either dialing, ringing, or connected, indicated by call controls/End call button).
+    (either dialing, ringing, or connected, indicated by call controls/End call button,
+    or window titled 'Call on PC' / 'Call on mobile device').
     Returns True if an active cellular call session exists in Phone Link.
     """
-    hwnd = find_phone_link_window()
-    if not hwnd:
+    hwnds = find_all_phone_link_windows()
+    if not hwnds:
         return False
 
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    # 1. Quick Title Check: "Call on PC" or "Call on mobile" indicates active call
+    for h in hwnds:
+        length = user32.GetWindowTextLengthW(h)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(h, buf, length + 1)
+            title = buf.value.lower()
+            if any(k in title for k in ["call on pc", "call on mobile", "call on"]):
+                return True
+
+    # 2. UI Automation Inspection across all Phone Link windows
     try:
         import comtypes
         import comtypes.client
@@ -537,19 +572,22 @@ def is_phone_link_call_present() -> bool:
         co_ok = _safe_coinit()
         try:
             uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
-            el = uia.ElementFromHandle(hwnd)
-            if not el:
-                return False
-
             btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
-            btns = el.FindAll(TreeScope_Descendants, btn_cond)
-            if btns:
-                for i in range(btns.Length):
-                    b = btns.GetElement(i)
-                    bid = (b.CurrentAutomationId or "").strip()
-                    bname = (b.CurrentName or "").strip().lower()
-                    if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
-                        return True
+            for hwnd in hwnds:
+                try:
+                    el = uia.ElementFromHandle(hwnd)
+                    if not el:
+                        continue
+                    btns = el.FindAll(TreeScope_Descendants, btn_cond)
+                    if btns:
+                        for i in range(btns.Length):
+                            b = btns.GetElement(i)
+                            bid = (b.CurrentAutomationId or "").strip()
+                            bname = (b.CurrentName or "").strip().lower()
+                            if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
+                                return True
+                except Exception:
+                    pass
             return False
         finally:
             _safe_couninit(co_ok)

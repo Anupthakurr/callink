@@ -93,6 +93,34 @@ except Exception:
 
 import sounddevice as sd
 
+# Prevent duplicate Callink instances from running simultaneously and fighting over audio/UIA
+_single_instance_mutex = None
+
+def ensure_single_instance():
+    """Prevents multiple Callink processes from running concurrently and fighting over Phone Link / audio."""
+    global _single_instance_mutex
+    if os.name != 'nt':
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        mutex_name = "Global\\Callink_GSM_Gateway_SingleInstance_Mutex"
+        _single_instance_mutex = kernel32.CreateMutexW(None, True, mutex_name)
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            print("\n[System Warning] Another instance of Callink is already running.")
+            print("[System Warning] Opening active dashboard in browser and exiting duplicate instance...")
+            try:
+                import webbrowser
+                webbrowser.open("http://localhost:5000")
+            except Exception:
+                pass
+            sys.exit(0)
+        return True
+    except Exception:
+        return True
+
+ensure_single_instance()
+
 # Load .env if present
 try:
     from dotenv import load_dotenv
@@ -1224,15 +1252,7 @@ async def run_gemini_bridge(
                         if sent_chunks > 0:
                             print(f"[Audio Link] 🎙️ Caller Audio: RMS={latest_rms} | Streamed: {sent_chunks} chunks to Gemini Live")
                         elif bridge.total_input_frames == 0:
-                            try:
-                                import outbound_dialer as dialer
-                                if not dialer.is_call_transferred_to_pc() and not dialer.is_transfer_clicked() and (now - dialer.get_last_transfer_time() > 10.0):
-                                    print("[Audio Link] ⚠️ Awaiting voice from phone (0 frames received — checking audio routing)...")
-                                    dialer.trigger_transfer_to_pc_async(timeout=4.0)
-                                else:
-                                    print("[Audio Link] ⏳ Call connected on PC — waiting for caller voice...")
-                            except Exception:
-                                pass
+                            print("[Audio Link] ⏳ Call connected on PC — waiting for caller voice...")
 
                     try:
                         pcm16 = bridge.to_ai.get_nowait()
@@ -1577,11 +1597,10 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
             pcm_active = False
 
         pl_active = False
-        if is_outbound:
-            try:
-                pl_active = dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected()
-            except Exception:
-                pl_active = False
+        try:
+            pl_active = dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected()
+        except Exception:
+            pl_active = False
 
         call_active = pcm_active or pl_active
 
