@@ -1007,13 +1007,18 @@ function initStudioMode() {
 }
 
 async function startBrowserVoiceCall(customWsUrl = null) {
+  if (appState.isStudioCalling) {
+    console.warn('[Voice Studio] Call already active.');
+    return;
+  }
+
   const startBtn = document.getElementById('btnStartBrowserCall');
   const endBtn = document.getElementById('btnEndBrowserCall');
   const orb = document.getElementById('studioOrb');
   const statusLabel = document.getElementById('studioStatusLabel');
   const box = document.getElementById('studioTranscriptsBox');
 
-  statusLabel.textContent = 'Requesting microphone permission...';
+  if (statusLabel) statusLabel.textContent = 'Requesting microphone permission...';
 
   try {
     // 1. Get browser microphone stream
@@ -1030,8 +1035,9 @@ async function startBrowserVoiceCall(customWsUrl = null) {
 
     // 2. Connect WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host || '127.0.0.1:5000';
     const isValidWs = typeof customWsUrl === 'string' && customWsUrl.startsWith('ws');
-    const wsUrl = isValidWs ? customWsUrl : `${protocol}//${window.location.host}/ws/browser_call`;
+    const wsUrl = isValidWs ? customWsUrl : `${protocol}//${host}/ws/browser_call`;
     console.log('[Voice Studio] Connecting to:', wsUrl);
     const ws = new WebSocket(wsUrl);
     appState.studioWs = ws;
@@ -1039,24 +1045,33 @@ async function startBrowserVoiceCall(customWsUrl = null) {
 
     ws.onopen = async () => {
       const isOutbound = wsUrl.includes('outbound=1');
-      statusLabel.textContent = isOutbound
-        ? 'Connected! AI is speaking first to initiate the call...'
-        : 'Connected! Speak to the AI assistant...';
-      orb.classList.add('active');
-      startBtn.classList.add('hidden');
-      endBtn.classList.remove('hidden');
-      box.innerHTML = '';
+      if (statusLabel) {
+        statusLabel.textContent = isOutbound
+          ? 'Connected! AI is speaking first to initiate the call...'
+          : 'Connected! Speak to the AI assistant...';
+      }
+      orb?.classList.add('active');
+      startBtn?.classList.add('hidden');
+      endBtn?.classList.remove('hidden');
+      if (box) box.innerHTML = '';
 
       appState.isStudioCalling = true;
       appState.studioSeconds = 0;
       clearInterval(appState.studioTimerInterval);
       appState.studioTimerInterval = setInterval(() => {
         appState.studioSeconds++;
-        document.getElementById('studioCallTimer').textContent = formatDuration(appState.studioSeconds);
+        const timerEl = document.getElementById('studioCallTimer');
+        if (timerEl) timerEl.textContent = formatDuration(appState.studioSeconds);
       }, 1000);
 
       // Start audio processing pipeline
-      await setupStudioAudioPipeline(stream, ws);
+      try {
+        await setupStudioAudioPipeline(stream, ws);
+      } catch (audioErr) {
+        console.error('[Voice Studio] Audio pipeline failed:', audioErr);
+        if (statusLabel) statusLabel.textContent = 'Audio setup error: ' + audioErr.message;
+        endBrowserVoiceCall();
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -1069,7 +1084,7 @@ async function startBrowserVoiceCall(customWsUrl = null) {
         } else if (msg.type === 'transcript') {
           appendStudioTranscript(msg.role, msg.text);
         } else if (msg.type === 'call_ended') {
-          teardownStudioSession('Call completed. Recording saved to library!');
+          teardownStudioSession(appState.studioSeconds > 0 ? 'Call completed. Recording saved to library!' : 'Voice call ended.');
           loadRecordings();
         } else if (msg.type === 'error') {
           alert('Studio error: ' + msg.message);
@@ -1092,39 +1107,63 @@ async function startBrowserVoiceCall(customWsUrl = null) {
     };
 
   } catch (err) {
-    statusLabel.textContent = 'Microphone access denied or error: ' + err.message;
+    if (statusLabel) statusLabel.textContent = 'Microphone access denied or error: ' + err.message;
     console.error('Browser call initiation failed:', err);
   }
 }
 
 async function setupStudioAudioPipeline(stream, ws) {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new AudioCtx({ sampleRate: 16000 });
+  let ctx;
+  try {
+    ctx = new AudioCtx({ sampleRate: 16000 });
+  } catch (e) {
+    console.warn('[Voice Studio] Native 16kHz AudioContext fallback:', e);
+    ctx = new AudioCtx();
+  }
   if (ctx.state === 'suspended') {
     try { await ctx.resume(); } catch (e) {}
   }
   appState.studioAudioContext = ctx;
 
+  const actualRate = ctx.sampleRate || 16000;
   const source = ctx.createMediaStreamSource(stream);
   // ScriptProcessor to grab 16-bit PCM blocks
-  const processor = ctx.createScriptProcessor(1024, 1, 1);
+  const processor = ctx.createScriptProcessor(2048, 1, 1);
   appState.studioProcessor = processor;
 
   processor.onaudioprocess = (e) => {
-    if (!appState.isStudioCalling || ws.readyState !== WebSocket.OPEN) return;
+    if (!appState.isStudioCalling || !ws || ws.readyState !== WebSocket.OPEN) return;
     const inputData = e.inputBuffer.getChannelData(0);
 
-    // Convert Float32Array to 16-bit PCM ArrayBuffer
-    const pcm16 = new Int16Array(inputData.length);
-    for (let i = 0; i < inputData.length; i++) {
-      let s = Math.max(-1, Math.min(1, inputData[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    let pcm16;
+    if (actualRate === 16000) {
+      pcm16 = new Int16Array(inputData.length);
+      for (let i = 0; i < inputData.length; i++) {
+        let s = Math.max(-1, Math.min(1, inputData[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+    } else {
+      const ratio = actualRate / 16000;
+      const targetLen = Math.floor(inputData.length / ratio);
+      pcm16 = new Int16Array(targetLen);
+      for (let i = 0; i < targetLen; i++) {
+        const srcIdx = Math.floor(i * ratio);
+        let s = Math.max(-1, Math.min(1, inputData[srcIdx]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
     }
-    ws.send(pcm16.buffer);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm16.buffer);
+    }
   };
 
   source.connect(processor);
-  processor.connect(ctx.destination);
+  // Connect to a silent gain node to prevent mic howling feedback loop into speakers
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0.0;
+  processor.connect(silentGain);
+  silentGain.connect(ctx.destination);
 }
 
 // Browser audio playback for Gemini Live 24kHz raw PCM
@@ -1134,7 +1173,12 @@ let studioNextStartTime = 0;
 function playGeminiPcmChunk(arrayBuffer) {
   if (!studioPlaybackCtx) {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    studioPlaybackCtx = new AudioCtx({ sampleRate: 24000 });
+    try {
+      studioPlaybackCtx = new AudioCtx({ sampleRate: 24000 });
+    } catch (e) {
+      console.warn('[Voice Studio] 24kHz playback AudioContext fallback:', e);
+      studioPlaybackCtx = new AudioCtx();
+    }
   }
   if (studioPlaybackCtx.state === 'suspended') {
     try { studioPlaybackCtx.resume(); } catch (e) {}
@@ -1245,6 +1289,14 @@ function endBrowserVoiceCall() {
 function teardownStudioSession(customMessage) {
   appState.isStudioCalling = false;
   clearInterval(appState.studioTimerInterval);
+
+  if (appState.studioWs) {
+    const ws = appState.studioWs;
+    appState.studioWs = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      try { ws.close(); } catch (e) {}
+    }
+  }
 
   if (appState.studioMediaStream) {
     appState.studioMediaStream.getTracks().forEach(t => t.stop());

@@ -238,6 +238,15 @@ def save_settings(new_settings: dict):
         print(f"[Settings Error] Could not save settings: {e}")
 
 
+@web.middleware
+async def no_cache_middleware(request, handler):
+    resp = await handler(request)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 class WebGatewayServer:
     """
     Asynchronous Web Platform Server for Callink.
@@ -249,7 +258,7 @@ class WebGatewayServer:
         self.host = host
         self.port = port
         self.start_time = time.time()
-        self.app = web.Application()
+        self.app = web.Application(middlewares=[no_cache_middleware])
         self.runner = None
         self.site = None
         self.loop = None
@@ -889,20 +898,23 @@ class WebGatewayServer:
                         if msg.type == WSMsgType.BINARY:
                             # 16kHz 16-bit mono PCM from browser mic
                             mic_data = msg.data
-                            caller_rms = audioop.rms(mic_data, 2)
-                            self.update_audio_levels(caller_rms, self.state["ai_rms"])
+                            try:
+                                caller_rms = audioop.rms(mic_data, 2)
+                                self.update_audio_levels(caller_rms, self.state["ai_rms"])
 
-                            # Record caller audio
-                            silence_ai = b"\x00" * len(mic_data)
-                            recorder.write_stereo_block(mic_data, silence_ai)
+                                # Record caller audio
+                                silence_ai = b"\x00" * len(mic_data)
+                                recorder.write_stereo_block(mic_data, silence_ai)
 
-                            # Stream to Gemini
-                            await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=mic_data,
-                                    mime_type="audio/pcm;rate=16000",
+                                # Stream to Gemini
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=mic_data,
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
                                 )
-                            )
+                            except Exception as stream_err:
+                                print(f"[Browser Audio Stream Warning]: {stream_err}")
                         elif msg.type == WSMsgType.TEXT:
                             data = json.loads(msg.data)
                             if data.get("type") == "end_call":
@@ -914,7 +926,11 @@ class WebGatewayServer:
 
         except Exception as e:
             print(f"[Browser Call Error]: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            if not ws.closed:
+                try:
+                    await ws.send_json({"type": "error", "message": str(e)})
+                except Exception:
+                    pass
 
         finally:
             meta = recorder.finish()
@@ -926,8 +942,11 @@ class WebGatewayServer:
             self.state["ai_rms"] = 0
             await self.broadcast("call_ended", {"metadata": meta})
             if not ws.closed:
-                await ws.send_json({"type": "call_ended", "metadata": meta})
-                await ws.close()
+                try:
+                    await ws.send_json({"type": "call_ended", "metadata": meta})
+                    await ws.close()
+                except Exception:
+                    pass
 
         return ws
 
