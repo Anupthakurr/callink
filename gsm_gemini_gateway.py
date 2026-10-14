@@ -96,27 +96,39 @@ import sounddevice as sd
 import multiprocessing
 multiprocessing.freeze_support()
 
-# Prevent duplicate Callink instances from running simultaneously and fighting over audio/UIA
-_single_instance_socket = None
-
 def ensure_single_instance():
     """Prevents multiple Callink processes from running concurrently and fighting over Phone Link / audio."""
-    global _single_instance_socket
-    import socket
     try:
-        _single_instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _single_instance_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-        _single_instance_socket.bind(('127.0.0.1', 49152))
+        import psutil
+        my_pid = os.getpid()
+        my_ppid = os.getppid() if hasattr(os, "getppid") else None
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                pid = proc.info['pid']
+                if pid == my_pid or pid == my_ppid:
+                    continue
+                pname = (proc.info.get('name') or '').lower()
+                is_duplicate = False
+                if pname == 'callink.exe':
+                    is_duplicate = True
+                elif 'python' in pname:
+                    cmdline = proc.info.get('cmdline') or []
+                    if any('gsm_gemini_gateway.py' in str(arg).lower() for arg in cmdline):
+                        is_duplicate = True
+                if is_duplicate:
+                    print("\n[System Warning] Another instance of Callink is already running.")
+                    print("[System Warning] Opening active dashboard in browser and exiting duplicate instance...")
+                    try:
+                        import webbrowser
+                        webbrowser.open("http://localhost:5000")
+                    except Exception:
+                        pass
+                    sys.exit(0)
+            except Exception:
+                pass
         return True
-    except socket.error:
-        print("\n[System Warning] Another instance of Callink is already running.")
-        print("[System Warning] Opening active dashboard in browser and exiting duplicate instance...")
-        try:
-            import webbrowser
-            webbrowser.open("http://localhost:5000")
-        except Exception:
-            pass
-        sys.exit(0)
+    except Exception:
+        return True
 
 ensure_single_instance()
 
@@ -1561,11 +1573,19 @@ async def run_gemini_bridge(
             if not stop_event.is_set():
                 print(f"[Gemini Live] Session error: {type(e).__name__}: {e}")
 
-        # Check if cellular call is still active
+        # Check if cellular call is still active (via WinRT or Phone Link window)
         try:
-            call_still_active = PhoneCallManager.get_is_call_active()
+            pcm_active = PhoneCallManager.get_is_call_active()
         except Exception:
-            call_still_active = False
+            pcm_active = False
+
+        pl_active = False
+        try:
+            pl_active = dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected()
+        except Exception:
+            pl_active = False
+
+        call_still_active = pcm_active or pl_active
 
         if not stop_event.is_set() and call_still_active:
             print("\n[Gateway] Cellular call is still ongoing! Reconnecting to a fresh Gemini Live session in 0.5s...")
