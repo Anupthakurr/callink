@@ -143,22 +143,23 @@ def find_phone_link_window():
 
 
 def ensure_phone_link_visible():
-    """Ensures Microsoft Phone Link is running in the background without disturbing active calls."""
-    import psutil
-    try:
-        for p in psutil.process_iter(['name']):
-            if 'phone' in (p.info['name'] or '').lower():
-                return
-    except Exception:
-        pass
+    """Ensures Microsoft Phone Link is opened and active on screen so in-call controls and popup appear."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    h = find_phone_link_window()
+    if h and user32.IsWindowVisible(h):
+        user32.ShowWindow(h, 9)  # SW_RESTORE
+        return
+
     import subprocess
     try:
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\Microsoft.YourPhone_8wekyb3d8bbwe!App"], shell=False)
     except Exception:
-        try:
-            os.startfile("ms-yourphone:")
-        except Exception:
-            pass
+        pass
+    try:
+        os.startfile("ms-yourphone:")
+    except Exception:
+        pass
 
 
 _transfer_lock = threading.Lock()
@@ -678,8 +679,6 @@ def _auto_press_dial(phone_number: str):
                                         inv.Invoke()
                                         call_invoked = True
                                         print("[Outbound Dialer] Invoked ButtonCall directly via UIAutomation!")
-                                        # Keep Phone Link behind without suspending it (avoid SW_MINIMIZE which suspends Windows 11 UWP apps)
-                                        user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
                                         break
                 finally:
                     _safe_couninit(co_ok)
@@ -730,8 +729,7 @@ def _auto_press_dial(phone_number: str):
                 time.sleep(0.03)
                 user32.keybd_event(VK_RETURN, 0, 2, 0)
 
-                # Keep Phone Link behind without suspending it (avoid SW_MINIMIZE which suspends Windows 11 UWP apps)
-                user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
 
                 # Restore original cursor position and previous foreground window
                 time.sleep(0.03)
@@ -817,6 +815,7 @@ def trigger_system_dialer(clean_number: str) -> bool:
             direct_dialed = pool.submit(_direct_winrt_dial, e164_number).result(timeout=2.5)
         if direct_dialed:
             print(f"[Outbound Dialer] Dispatched cellular call to {e164_number} directly via WinRT PhoneLine.")
+            ensure_phone_link_visible()
             # Trigger audio transfer to PC watcher in background
             trigger_transfer_to_pc_async(timeout=20.0)
             return True
