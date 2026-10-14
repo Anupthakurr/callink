@@ -68,12 +68,18 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import asyncio
 import audioop
 import ctypes
+from ctypes import wintypes
 import os
 import queue
+import re
 import threading
 import time
 import traceback
 import webbrowser
+import winreg
+import comtypes
+import comtypes.client
+from comtypes import GUID, COMMETHOD, HRESULT, POINTER, IUnknown
 
 # MUST import winrt before sounddevice to ensure COM is initialized in MTA mode
 try:
@@ -211,9 +217,184 @@ def is_pc_voip_call_active() -> bool:
     return False
 
 
+HFP_RATE = 16000       # native rate of the Windows HFP endpoint
+HFP_BLOCK = 320        # 20ms block @ 16kHz (320 samples = 640 bytes)
+
+# Gemini Live API audio contract:
+#   input  (you -> model):  16-bit PCM, mono, 16 kHz
+#   output (model -> you):  16-bit PCM, mono, 24 kHz
+GEMINI_IN_RATE = 16000
+GEMINI_OUT_RATE = 24000
+
+GEMINI_MODEL = "gemini-3.1-flash-live-preview"
+
+# Barge-in VAD parameters (for client-side speech detection while AI is playing)
+VAD_RMS_THRESHOLD = 4200
+VAD_TRIGGER_CONSECUTIVE = 8       # ~160ms of sustained speech above threshold
+VAD_INITIAL_GRACE_PERIOD = 0.60   # 600ms grace period after AI speech starts before client barge-in triggers
+
+
+# ==============================================================================
+# WINDOWS CORE AUDIO (WASAPI) NATIVE COM INTERFACES
+# ==============================================================================
+CLSID_MMDeviceEnumerator = GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
+IID_IMMDeviceEnumerator = GUID("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
+IID_IMMDevice = GUID("{D666063F-1587-4E43-81F1-B948E807363F}")
+IID_IAudioClient = GUID("{1CB9AD4C-DBFA-4c32-B178-C2F568A703B2}")
+IID_IAudioCaptureClient = GUID("{C8ADBD64-E71E-48a0-A4DE-185C395CD317}")
+IID_IAudioRenderClient = GUID("{F294ACFC-3146-4483-A7BF-ADDCA7C260E2}")
+
+class WAVEFORMATEX(ctypes.Structure):
+    _fields_ = [
+        ("wFormatTag", wintypes.WORD),
+        ("nChannels", wintypes.WORD),
+        ("nSamplesPerSec", wintypes.DWORD),
+        ("nAvgBytesPerSec", wintypes.DWORD),
+        ("nBlockAlign", wintypes.WORD),
+        ("wBitsPerSample", wintypes.WORD),
+        ("cbSize", wintypes.WORD),
+    ]
+
+class IAudioCaptureClient(IUnknown):
+    _iid_ = IID_IAudioCaptureClient
+    _methods_ = [
+        COMMETHOD([], HRESULT, "GetBuffer", (['out'], POINTER(POINTER(ctypes.c_byte)), "ppData"), (['out'], POINTER(wintypes.DWORD), "pNumFramesToRead"), (['out'], POINTER(wintypes.DWORD), "pdwFlags"), (['out'], POINTER(ctypes.c_ulonglong), "pu64DevicePosition"), (['out'], POINTER(ctypes.c_ulonglong), "pu64QPCPosition")),
+        COMMETHOD([], HRESULT, "ReleaseBuffer", (['in'], wintypes.DWORD, "NumFramesRead")),
+        COMMETHOD([], HRESULT, "GetNextPacketSize", (['out'], POINTER(wintypes.DWORD), "pNumFramesInNextPacket")),
+    ]
+
+class IAudioRenderClient(IUnknown):
+    _iid_ = IID_IAudioRenderClient
+    _methods_ = [
+        COMMETHOD([], HRESULT, "GetBuffer", (['in'], wintypes.DWORD, "NumFramesRequested"), (['out'], POINTER(POINTER(ctypes.c_byte)), "ppData")),
+        COMMETHOD([], HRESULT, "ReleaseBuffer", (['in'], wintypes.DWORD, "NumFramesWritten"), (['in'], wintypes.DWORD, "dwFlags")),
+    ]
+
+class IAudioClient(IUnknown):
+    _iid_ = IID_IAudioClient
+    _methods_ = [
+        COMMETHOD([], HRESULT, "Initialize", (['in'], ctypes.c_int, "ShareMode"), (['in'], wintypes.DWORD, "StreamFlags"), (['in'], ctypes.c_longlong, "hnsBufferDuration"), (['in'], ctypes.c_longlong, "hnsPeriodicity"), (['in'], POINTER(WAVEFORMATEX), "pFormat"), (['in'], ctypes.c_void_p, "AudioSessionGuid")),
+        COMMETHOD([], HRESULT, "GetBufferSize", (['out'], POINTER(wintypes.DWORD), "pNumBufferFrames")),
+        COMMETHOD([], HRESULT, "GetStreamLatency", (['out'], POINTER(ctypes.c_longlong), "phnsLatency")),
+        COMMETHOD([], HRESULT, "GetCurrentPadding", (['out'], POINTER(wintypes.DWORD), "pNumPaddingFrames")),
+        COMMETHOD([], HRESULT, "IsFormatSupported", (['in'], ctypes.c_int, "ShareMode"), (['in'], POINTER(WAVEFORMATEX), "pFormat"), (['out'], POINTER(POINTER(WAVEFORMATEX)), "ppClosestMatch")),
+        COMMETHOD([], HRESULT, "GetMixFormat", (['out'], POINTER(POINTER(WAVEFORMATEX)), "ppDeviceFormat")),
+        COMMETHOD([], HRESULT, "GetDevicePeriod", (['out'], POINTER(ctypes.c_longlong), "phnsDefaultDevicePeriod"), (['out'], POINTER(ctypes.c_longlong), "phnsMinimumDevicePeriod")),
+        COMMETHOD([], HRESULT, "Start"),
+        COMMETHOD([], HRESULT, "Stop"),
+        COMMETHOD([], HRESULT, "Reset"),
+        COMMETHOD([], HRESULT, "SetEventHandle", (['in'], wintypes.HANDLE, "eventHandle")),
+        COMMETHOD([], HRESULT, "GetService", (['in'], POINTER(GUID), "iid"), (['out'], POINTER(POINTER(IUnknown)), "ppv")),
+    ]
+
+class IMMDevice(IUnknown):
+    _iid_ = IID_IMMDevice
+    _methods_ = [
+        COMMETHOD([], HRESULT, "Activate", (['in'], POINTER(GUID), "iid"), (['in'], wintypes.DWORD, "dwClsCtx"), (['in'], ctypes.c_void_p, "pActivationParams"), (['out'], POINTER(POINTER(IUnknown)), "ppInterface")),
+        COMMETHOD([], HRESULT, "OpenPropertyStore", (['in'], wintypes.DWORD, "stgmAccess"), (['out'], POINTER(POINTER(IUnknown)), "ppProperties")),
+        COMMETHOD([], HRESULT, "GetId", (['out'], POINTER(wintypes.LPWSTR), "ppstrId")),
+        COMMETHOD([], HRESULT, "GetState", (['out'], POINTER(wintypes.DWORD), "pdwState")),
+    ]
+
+class IMMDeviceEnumerator(IUnknown):
+    _iid_ = IID_IMMDeviceEnumerator
+    _methods_ = [
+        COMMETHOD([], HRESULT, "EnumAudioEndpoints", (['in'], ctypes.c_int, "dataFlow"), (['in'], wintypes.DWORD, "dwStateMask"), (['out'], POINTER(POINTER(IUnknown)), "ppDevices")),
+        COMMETHOD([], HRESULT, "GetDefaultAudioEndpoint", (['in'], ctypes.c_int, "dataFlow"), (['in'], ctypes.c_int, "role"), (['out'], POINTER(POINTER(IMMDevice)), "ppEndpoint")),
+        COMMETHOD([], HRESULT, "GetDevice", (['in'], wintypes.LPCWSTR, "pwstrId"), (['out'], POINTER(POINTER(IMMDevice)), "ppDevice")),
+    ]
+
+_last_bth_phone_name = "Bluetooth Phone"
+
+
+def find_active_bthhfenum_endpoints(preferred_phone: str = ""):
+    """Finds active Bluetooth HFP audio endpoints (capture & render) via Windows MMDevice registry & COM.
+    Filters out unplugged devices and prioritizes active connected phones.
+    Returns (capture_id, render_id, device_name) or (None, None, None)."""
+    bth_map = {}
+    try:
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Enum\BTHHFENUM\BthHFPAudio")
+        for i in range(winreg.QueryInfoKey(k)[0]):
+            sub = winreg.EnumKey(k, i)
+            skey = winreg.OpenKey(k, sub)
+            try:
+                friendly, _ = winreg.QueryValueEx(skey, "FriendlyName")
+                m = re.search(r'\((.*?)\)', friendly)
+                phone_name = m.group(1) if m else friendly
+                bth_map[sub.lower()] = phone_name
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    candidates = []
+    cap_active = {}
+    ren_active = {}
+
+    for flow, flow_code, target_dict in [("Capture", "0.0.1.00000000", cap_active), ("Render", "0.0.0.00000000", ren_active)]:
+        reg_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{flow}"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path)
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                guid = winreg.EnumKey(key, i)
+                dkey = winreg.OpenKey(key, guid)
+                state, _ = winreg.QueryValueEx(dkey, "DeviceState")
+                if state != 1:  # Only DEVICE_STATE_ACTIVE (1)
+                    continue
+                pkey = winreg.OpenKey(key, rf"{guid}\Properties")
+                for v_idx in range(winreg.QueryInfoKey(pkey)[1]):
+                    _, val_data, _ = winreg.EnumValue(pkey, v_idx)
+                    val_str = str(val_data).lower()
+                    if "bthhfenum" in val_str or "bthhfpaudio" in val_str:
+                        for sub_id, name in bth_map.items():
+                            if sub_id in val_str:
+                                target_dict[sub_id] = (f"{{{flow_code}}}.{guid}", name)
+                                break
+                        else:
+                            target_dict[guid] = (f"{{{flow_code}}}.{guid}", "Bluetooth Phone")
+                        break
+        except Exception:
+            pass
+
+    common_keys = set(cap_active.keys()) & set(ren_active.keys())
+    for k in common_keys:
+        cap_id, name = cap_active[k]
+        ren_id, _ = ren_active[k]
+        candidates.append((cap_id, ren_id, name))
+
+    if not candidates:
+        if cap_active and ren_active:
+            c_k = next(iter(cap_active))
+            r_k = next(iter(ren_active))
+            return cap_active[c_k][0], ren_active[r_k][0], cap_active[c_k][1]
+        return None, None, None
+
+    if preferred_phone:
+        p_low = preferred_phone.lower()
+        for cap_id, ren_id, name in candidates:
+            if p_low in name.lower():
+                return cap_id, ren_id, name
+        print(f"[Audio Link] Preferred phone '{preferred_phone}' not active. Using connected phone '{candidates[0][2]}'.")
+
+    return candidates[0]
+
+
 def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
-    """Discovers Windows Bluetooth Hands-Free HF Audio input and output devices.
-    Prioritizes WASAPI endpoints when available, falling back smoothly to WDM-KS."""
+    """Discovers Windows Bluetooth Hands-Free HF Audio input and output endpoints.
+    Prioritizes native Windows Core Audio (WASAPI) active endpoints from bthhfenum.sys,
+    guaranteeing zero driver IOCTL errors and rock-solid audio synchronization.
+    Falls back to PortAudio/sounddevice if no native BTHHFENUM endpoints are detected."""
+    global _last_bth_phone_name
+    preferred_phone = os.environ.get("PHONE_NAME", "").strip()
+    cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
+    if cap_id and ren_id:
+        _last_bth_phone_name = phone_name
+        if not quiet:
+            print(f"HFP INPUT  : WASAPI Endpoint ({phone_name}) [{cap_id}]")
+            print(f"HFP OUTPUT : WASAPI Endpoint ({phone_name}) [{ren_id}]")
+        return cap_id, ren_id
+
+    # Fallback to PortAudio/sounddevice
     if force_refresh:
         try:
             sd._terminate()
@@ -239,6 +420,58 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
             return api_ranks.get(api_name, 0)
         return 0
 
+    preferred_phone_low = preferred_phone.lower()
+
+    def score_device(i, dev, is_input: bool):
+        name = dev["name"].lower()
+        if "hands-free" not in name and "handsfree" not in name:
+            return -1
+
+        channels = dev["max_input_channels"] if is_input else dev["max_output_channels"]
+        if channels <= 0:
+            return -1
+
+        score = 0
+
+        # 1. Configured or detected phone name preference
+        if preferred_phone_low and preferred_phone_low in name:
+            score += 50
+
+        # 2. Prefer telephony endpoints created by Microsoft Phone Link (Hands-Free HF Audio)
+        if "hands-free hf audio" in name:
+            score += 15
+        elif "hands-free" in name:
+            score += 5
+
+        # 3. Prefer 16kHz native rate (wideband mSBC)
+        sr = int(dev.get("default_samplerate", 0))
+        if sr == HFP_RATE:
+            score += 20
+        elif sr == 8000:
+            score += 5
+
+        # 4. Host API stability
+        score += get_api_score(dev)
+
+        # 5. VALIDATE: Test that PortAudio can actually configure this endpoint at HFP_RATE
+        try:
+            if is_input:
+                sd.check_input_settings(device=i, samplerate=HFP_RATE, channels=1, dtype="int16")
+            else:
+                sd.check_output_settings(device=i, samplerate=HFP_RATE, channels=1, dtype="int16")
+            score += 30
+        except Exception:
+            try:
+                if is_input:
+                    sd.check_input_settings(device=i, samplerate=8000, channels=1, dtype="int16")
+                else:
+                    sd.check_output_settings(device=i, samplerate=8000, channels=1, dtype="int16")
+                score += 5
+            except Exception:
+                score -= 100
+
+        return score
+
     best_in_idx = None
     best_in_score = -1
 
@@ -246,23 +479,17 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
     best_out_score = -1
 
     for i, device in enumerate(devices):
-        name = device["name"].lower()
-        if "hands-free" not in name and "handsfree" not in name:
-            continue
-
-        # Score based on exact name match & host API stability
-        name_score = 10 if "hands-free hf audio" in name else 5
-        score = name_score + get_api_score(device)
-
-        if device["max_input_channels"] > 0 and score > best_in_score:
+        in_s = score_device(i, device, is_input=True)
+        if in_s > best_in_score:
             best_in_idx = i
-            best_in_score = score
+            best_in_score = in_s
 
-        if device["max_output_channels"] > 0 and score > best_out_score:
+        out_s = score_device(i, device, is_input=False)
+        if out_s > best_out_score:
             best_out_idx = i
-            best_out_score = score
+            best_out_score = out_s
 
-    if best_in_idx is None or best_out_idx is None:
+    if best_in_idx is None or best_out_idx is None or best_in_score < 0 or best_out_score < 0:
         if not quiet:
             print("[INFO] Bluetooth HFP device not yet detected. Ready for phone pairing via Phone Link.")
         return None, None
@@ -276,26 +503,10 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
     return best_in_idx, best_out_idx
 
 
-HFP_RATE = 16000       # native rate of the Windows HFP endpoint
-HFP_BLOCK = 320        # 20ms block @ 16kHz (320 samples = 640 bytes)
-
-# Gemini Live API audio contract:
-#   input  (you -> model):  16-bit PCM, mono, 16 kHz
-#   output (model -> you):  16-bit PCM, mono, 24 kHz
-GEMINI_IN_RATE = 16000
-GEMINI_OUT_RATE = 24000
-
-GEMINI_MODEL = "gemini-3.1-flash-live-preview"
-
-# Barge-in VAD parameters (for client-side speech detection while AI is playing)
-VAD_RMS_THRESHOLD = 4200
-VAD_TRIGGER_CONSECUTIVE = 8       # ~160ms of sustained speech above threshold
-VAD_INITIAL_GRACE_PERIOD = 0.60   # 600ms grace period after AI speech starts before client barge-in triggers
-
-
 class HFPBridge:
     """Reads/writes the Windows Bluetooth HFP device.
-    Features a high-resilience byte-level FIFO playback buffer with Jitter Prebuffering
+    Features native Windows Core Audio (WASAPI) hardware streaming with automatic PCM conversion,
+    and a high-resilience byte-level FIFO playback buffer with Jitter Prebuffering
     to eliminate audio stuttering, clicks, and dropouts over Bluetooth SCO."""
 
     def __init__(self, in_dev=None, out_dev=None):
@@ -303,6 +514,12 @@ class HFPBridge:
 
         self.input_device = in_dev
         self.output_device = out_dev
+
+        self.is_wasapi = isinstance(in_dev, str) and isinstance(out_dev, str) and in_dev.startswith("{")
+        self.phone_name = _last_bth_phone_name if self.is_wasapi else ""
+        self._wasapi_running = False
+        self._cap_thread = None
+        self._ren_thread = None
 
         self.input_stream = None
         self.output_stream = None
@@ -324,6 +541,7 @@ class HFPBridge:
         self.prebuffer_target_bytes = 3840
 
     def input_callback(self, indata, frames, time_info, status):
+        """PortAudio fallback callback for standard audio devices."""
         try:
             pcm16 = indata[:, 0].tobytes()
             self.total_input_frames += 1
@@ -358,17 +576,16 @@ class HFPBridge:
             return len(self._playback_bytes) > 0 or not self._is_buffering
 
     def output_callback(self, outdata, frames, time_info, status):
+        """PortAudio fallback callback for standard audio devices."""
         try:
             outdata.fill(0)
             bytes_needed = frames * 2  # 16-bit mono = 2 bytes per frame
             raw_chunk = b""
 
             with self._playback_lock:
-                # If still collecting initial jitter cushion, output silence
                 if self._is_buffering:
                     pass
                 elif len(self._playback_bytes) == 0:
-                    # If queue has completely drained, reset buffering for next utterance
                     self._is_buffering = True
                     self.playback_started_at = None
                 else:
@@ -379,7 +596,6 @@ class HFPBridge:
                     raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
                     del self._playback_bytes[:bytes_to_pull]
 
-                    # If buffer is now empty, re-arm buffering
                     if len(self._playback_bytes) == 0:
                         self._is_buffering = True
                         self.playback_started_at = None
@@ -390,11 +606,9 @@ class HFPBridge:
                 outdata[:samples, 0] = data
                 self.total_output_frames += samples
 
-            # Keep latest chunk for instant RMS telemetry
             out_bytes = outdata[:, 0].tobytes()
             self.last_played_chunk = out_bytes
 
-            # Queue every played frame sequentially into the recording FIFO (no duplicates, no drops)
             try:
                 self.ai_record_queue.put_nowait(out_bytes)
             except queue.Full:
@@ -406,6 +620,159 @@ class HFPBridge:
 
         except Exception as e:
             print("HFP OUTPUT CALLBACK ERROR:", e)
+
+    def _capture_worker(self):
+        """Native WASAPI Capture Worker Thread (Microphone from phone over Bluetooth SCO)."""
+        comtypes.CoInitialize()
+        try:
+            enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
+            dev = enum_obj.GetDevice(self.input_device)
+            p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
+            client = p_client.QueryInterface(IAudioClient)
+
+            wfx = WAVEFORMATEX()
+            wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
+            wfx.nChannels = 1
+            wfx.nSamplesPerSec = 16000
+            wfx.wBitsPerSample = 16
+            wfx.nBlockAlign = 2
+            wfx.nAvgBytesPerSec = 32000
+            wfx.cbSize = 0
+
+            # Automatic hardware conversion to device format with standard quality resampler
+            flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+            client.Initialize(0, flags, 10000000, 0, ctypes.byref(wfx), None)
+            p_cap = client.GetService(ctypes.byref(IID_IAudioCaptureClient))
+            capture = p_cap.QueryInterface(IAudioCaptureClient)
+
+            client.Start()
+            chunk_remainder = bytearray()
+
+            while self._wasapi_running:
+                got_packet = False
+                while self._wasapi_running:
+                    try:
+                        pkt = capture.GetNextPacketSize()
+                        if pkt == 0:
+                            break
+                        p_data, num_frames, flags_val, dev_pos, qpc_pos = capture.GetBuffer()
+                    except Exception:
+                        break
+
+                    if num_frames == 0 or not p_data:
+                        break
+
+                    got_packet = True
+                    byte_count = num_frames * 2
+                    if flags_val & 0x02:  # AUDCLNT_BUFFERFLAGS_SILENT
+                        raw_data = b"\x00" * byte_count
+                    else:
+                        raw_data = ctypes.string_at(p_data, byte_count)
+                    capture.ReleaseBuffer(num_frames)
+
+                    chunk_remainder.extend(raw_data)
+                    while len(chunk_remainder) >= 640:
+                        pcm16 = bytes(chunk_remainder[:640])
+                        del chunk_remainder[:640]
+                        self.total_input_frames += 320
+                        try:
+                            self.to_ai.put_nowait(pcm16)
+                        except queue.Full:
+                            pass
+
+                if not got_packet:
+                    time.sleep(0.005)
+
+            client.Stop()
+        except Exception as e:
+            if self._wasapi_running:
+                print(f"[WASAPI Capture Worker Error]: {e}")
+        finally:
+            comtypes.CoUninitialize()
+
+    def _render_worker(self):
+        """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO)."""
+        comtypes.CoInitialize()
+        try:
+            enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
+            dev = enum_obj.GetDevice(self.output_device)
+            p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
+            client = p_client.QueryInterface(IAudioClient)
+
+            wfx = WAVEFORMATEX()
+            wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
+            wfx.nChannels = 1
+            wfx.nSamplesPerSec = 16000
+            wfx.wBitsPerSample = 16
+            wfx.nBlockAlign = 2
+            wfx.nAvgBytesPerSec = 32000
+            wfx.cbSize = 0
+
+            flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+            client.Initialize(0, flags, 1000000, 0, ctypes.byref(wfx), None)
+            buf_size = client.GetBufferSize()
+
+            p_rend = client.GetService(ctypes.byref(IID_IAudioRenderClient))
+            render = p_rend.QueryInterface(IAudioRenderClient)
+
+            client.Start()
+
+            while self._wasapi_running:
+                padding = client.GetCurrentPadding()
+                available = buf_size - padding
+                if available >= 320:  # 20ms frame blocks @ 16kHz
+                    frames_to_write = 320
+                    bytes_needed = frames_to_write * 2
+                    raw_chunk = b""
+
+                    with self._playback_lock:
+                        if self._is_buffering:
+                            pass
+                        elif len(self._playback_bytes) == 0:
+                            self._is_buffering = True
+                            self.playback_started_at = None
+                        else:
+                            if self.playback_started_at is None:
+                                self.playback_started_at = time.time()
+                            bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
+                            raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
+                            del self._playback_bytes[:bytes_to_pull]
+                            if len(self._playback_bytes) == 0:
+                                self._is_buffering = True
+                                self.playback_started_at = None
+
+                    p_buffer = render.GetBuffer(frames_to_write)
+                    if raw_chunk:
+                        chunk_len = len(raw_chunk)
+                        ctypes.memmove(p_buffer, raw_chunk, chunk_len)
+                        if chunk_len < bytes_needed:
+                            ctypes.memset(ctypes.cast(p_buffer, ctypes.c_void_p).value + chunk_len, 0, bytes_needed - chunk_len)
+                        self.total_output_frames += frames_to_write
+                        out_bytes = raw_chunk.ljust(bytes_needed, b"\x00")
+                    else:
+                        ctypes.memset(p_buffer, 0, bytes_needed)
+                        out_bytes = b"\x00" * bytes_needed
+
+                    render.ReleaseBuffer(frames_to_write, 0)
+                    self.last_played_chunk = out_bytes
+
+                    try:
+                        self.ai_record_queue.put_nowait(out_bytes)
+                    except queue.Full:
+                        try:
+                            self.ai_record_queue.get_nowait()
+                            self.ai_record_queue.put_nowait(out_bytes)
+                        except Exception:
+                            pass
+                else:
+                    time.sleep(0.005)
+
+            client.Stop()
+        except Exception as e:
+            if self._wasapi_running:
+                print(f"[WASAPI Render Worker Error]: {e}")
+        finally:
+            comtypes.CoUninitialize()
 
     def clear_playback(self):
         """Immediately drain pending audio from playback buffer for instantaneous barge-in."""
@@ -426,7 +793,13 @@ class HFPBridge:
             print(f"[BARGE-IN] Drained {drained_bytes} pending audio bytes from playback buffer.")
 
     def is_healthy(self) -> bool:
-        """Check whether both input and output streams exist and are active."""
+        """Check whether both input and output streams / worker threads exist and are active."""
+        if self.is_wasapi:
+            return (
+                self._wasapi_running
+                and (self._cap_thread is not None and self._cap_thread.is_alive())
+                and (self._ren_thread is not None and self._ren_thread.is_alive())
+            )
         try:
             in_ok = self.input_stream is not None and self.input_stream.active
             out_ok = self.output_stream is not None and self.output_stream.active
@@ -434,58 +807,93 @@ class HFPBridge:
         except Exception:
             return False
 
-    def start(self, max_retries: int = 20, retry_delay: float = 0.35, is_outbound: bool = False) -> bool:
+    def start(self, max_retries: int = 35, retry_delay: float = 0.35, is_outbound: bool = False) -> bool:
         if is_outbound:
             # Outbound cellular calls take time to ring on the mobile network until recipient answers!
-            max_retries = 60
-            retry_delay = 0.75
+            max_retries = 90
+            retry_delay = 0.5
 
-        had_connected = False
         inactive_streak = 0
         for attempt in range(1, max_retries + 1):
             if is_outbound:
-                # Check if user cancelled from dashboard
+                # 1. Check if user cancelled from dashboard
                 try:
                     import outbound_dialer as dialer
-                    if not dialer.get_active_outbound():
+                    if dialer.is_dial_cancelled():
                         print("[Audio Link] Outbound call cancelled by user via dashboard.")
-                        dialer.cancel_outbound_dial()
+                        dialer.cancel_outbound_dial(force_hangup=True)
                         return False
                 except Exception:
                     pass
 
-            # Check call active status
+            # 2. Check call active status via WinRT telephony
             try:
                 from winrt.windows.applicationmodel.calls import PhoneCallManager
                 is_active = PhoneCallManager.get_is_call_active()
             except Exception:
                 is_active = False
 
-            if not is_outbound:
+            if is_outbound:
+                if not is_active:
+                    elapsed = int(attempt * retry_delay)
+                    if attempt == 1 or attempt % 4 == 0:
+                        print(f"[Audio Link] ⏳ Outbound call initializing ({elapsed}s elapsed)...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    elapsed = int(attempt * retry_delay)
+                    print(f"\n[Audio Link] 🔔 Cellular call placed ({elapsed}s elapsed)! Audio bridge engaged...")
+                    time.sleep(0.35)  # Allow cellular hardware audio channel 350ms to stabilize
+            else:
                 # For incoming calls only: if caller hung up before audio bridge opened
                 if not is_active:
                     inactive_streak += 1
-                    if inactive_streak >= 4:
+                    if inactive_streak >= 6:
                         print("[Audio Link] Incoming call ceased before audio bridge opened.")
                         return False
                 else:
                     inactive_streak = 0
 
-            if self.input_device is None or self.output_device is None:
-                in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=(attempt > 1))
-                if in_dev is None or out_dev is None:
-                    if attempt < max_retries:
-                        time.sleep(retry_delay)
-                        continue
-                    raise RuntimeError(
-                        "Bluetooth Hands-Free (HFP) endpoint not found. "
-                        "Please ensure phone is paired via Microsoft Phone Link."
-                    )
+            # 3. Dynamic re-resolution: refresh and ensure endpoints match active connected phone
+            in_dev, out_dev = find_hfp_devices(quiet=True, force_refresh=(attempt > 1 or is_outbound))
+            if in_dev is not None and out_dev is not None:
                 self.input_device = in_dev
                 self.output_device = out_dev
+                self.is_wasapi = isinstance(in_dev, str) and isinstance(out_dev, str) and in_dev.startswith("{")
+                if self.is_wasapi:
+                    self.phone_name = _last_bth_phone_name
+
+            if self.input_device is None or self.output_device is None:
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise RuntimeError(
+                    "Bluetooth Hands-Free (HFP) endpoint not found. "
+                    "Please ensure phone is paired via Microsoft Phone Link."
+                )
 
             try:
-                # 1. Open Output Stream (Speaker playback to phone)
+                # 4. Native Windows WASAPI Engine for Bluetooth HFP
+                if self.is_wasapi:
+                    self._wasapi_running = True
+                    self._cap_thread = threading.Thread(target=self._capture_worker, daemon=True, name="WASAPICapture")
+                    self._ren_thread = threading.Thread(target=self._render_worker, daemon=True, name="WASAPIRender")
+                    self._cap_thread.start()
+                    self._ren_thread.start()
+                    time.sleep(0.15)
+                    if self.is_healthy():
+                        print(f"[Audio Link] WASAPI Bluetooth HFP audio bridge running successfully ({self.phone_name}).\n")
+                        # Ensure call audio is routed to PC once recipient answers
+                        try:
+                            import outbound_dialer as dialer
+                            dialer.trigger_transfer_to_pc_async(timeout=6.0)
+                        except Exception:
+                            pass
+                        return True
+                    else:
+                        raise RuntimeError("WASAPI worker threads did not start properly.")
+
+                # 5. PortAudio Fallback Engine
                 if not self.output_stream:
                     self.output_stream = sd.OutputStream(
                         device=self.output_device,
@@ -497,8 +905,6 @@ class HFPBridge:
                     )
                     self.output_stream.start()
 
-                # 2. Open Input Stream (Mic audio from phone)
-                # Gated by Windows Bluetooth SCO driver; opens successfully once call audio channel is live
                 if not self.input_stream:
                     self.input_stream = sd.InputStream(
                         device=self.input_device,
@@ -510,29 +916,40 @@ class HFPBridge:
                     )
                     self.input_stream.start()
 
-                print("HFP audio bridge running.\n")
+                print("[Audio Link] HFP audio bridge running successfully.\n")
+                try:
+                    import outbound_dialer as dialer
+                    dialer.trigger_transfer_to_pc_async(timeout=6.0)
+                except Exception:
+                    pass
                 return True
             except Exception as e:
                 self.stop()
                 if attempt < max_retries:
-                    if is_outbound:
-                        if attempt % 2 == 0 or attempt <= 2:
-                            elapsed = int(attempt * retry_delay)
-                            print(f"[Audio Link] ⏳ Outbound call ringing... Waiting for recipient to answer ({elapsed}s elapsed)...")
-                    else:
-                        print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
+                    print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}: {e}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
                     time.sleep(retry_delay)
                 else:
                     if is_outbound:
                         print(f"[Audio Link] Outbound call not answered by recipient after {int(max_retries * retry_delay)}s.")
                         return False
                     else:
-                        print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts.")
+                        print(f"[Audio Error] Failed to start Bluetooth HFP audio streams after {max_retries} attempts ({type(e).__name__}: {e}).")
                         return False
 
+        if is_outbound:
+            print(f"[Audio Link] Outbound call not answered by recipient after {int(max_retries * retry_delay)}s.")
         return False
 
     def stop(self):
+        if self.is_wasapi:
+            self._wasapi_running = False
+            if self._cap_thread:
+                self._cap_thread.join(timeout=1.0)
+                self._cap_thread = None
+            if self._ren_thread:
+                self._ren_thread.join(timeout=1.0)
+                self._ren_thread = None
+
         if self.input_stream:
             try:
                 self.input_stream.stop()
@@ -660,6 +1077,13 @@ async def run_gemini_bridge(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
             )
         ),
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                silence_duration_ms=450,
+                prefix_padding_ms=100,
+            )
+        ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
@@ -699,8 +1123,68 @@ async def run_gemini_bridge(
             if flushed > 0:
                 print(f"[Audio] Flushed {flushed} stale frames from pre-connection buffer.")
 
+            is_initial_greeting_active = False
+            greeting_sent_time = 0.0
+
             # Proactively prompt Gemini to speak first on pickup
             if is_initial_connect:
+                if outbound_info:
+                    print(f"[Gateway] ⏳ Outbound call to {outbound_info.get('contact_name')} is ringing... Awaiting recipient pickup...")
+                    pickup_detected = False
+                    pickup_start = time.time()
+                    consecutive_voice_chunks = 0
+
+                    while not stop_event.is_set() and not session_stop_event.is_set():
+                        # 1. Check if Phone Link reports call connected / duration timer active
+                        try:
+                            if dialer.is_phone_link_call_connected():
+                                print("[Gateway] 🔔 Phone Link reports call connected / duration active!")
+                                pickup_detected = True
+                                break
+                        except Exception:
+                            pass
+
+                        # 2. Check audio line for recipient voice (RMS > vad_threshold)
+                        # Wait at least 2.5s to bypass carrier dialing tones and connection clicks
+                        elapsed = time.time() - pickup_start
+                        while not bridge.to_ai.empty():
+                            try:
+                                chunk = bridge.to_ai.get_nowait()
+                                chunk_rms = audioop.rms(chunk, 2)
+                                if elapsed >= 2.5 and chunk_rms > vad_threshold:
+                                    consecutive_voice_chunks += 1
+                                    if consecutive_voice_chunks >= 2:
+                                        print(f"[Gateway] 🔔 Recipient voice detected on line (RMS={chunk_rms})!")
+                                        pickup_detected = True
+                                        break
+                                else:
+                                    consecutive_voice_chunks = 0
+                            except Exception:
+                                break
+
+                        if pickup_detected:
+                            break
+
+                        # 3. Proactive pickup fallback: after 18.0s of active call, engage proactive AI greeting!
+                        if elapsed >= 18.0:
+                            print(f"[Gateway] 🔔 Outbound call active ({elapsed:.1f}s elapsed) — engaging proactive AI greeting!")
+                            pickup_detected = True
+                            break
+
+                        await asyncio.sleep(0.1)
+
+                    if not pickup_detected or stop_event.is_set() or session_stop_event.is_set():
+                        is_initial_connect = False
+                        return
+
+                # Flush any leftover dialing noise/audio before dispatching greeting
+                while not bridge.to_ai.empty():
+                    try:
+                        bridge.to_ai.get_nowait()
+                    except Exception:
+                        break
+
+                greeting_sent_time = time.time()
                 try:
                     if outbound_info:
                         greeting_turn = dialer.build_outbound_proactive_prompt(outbound_info)
@@ -712,16 +1196,10 @@ async def run_gemini_bridge(
                             "Immediately greet them warmly and concisely in one short sentence, "
                             "such as 'Hello! Thanks for calling, how can I help you today?']"
                         )
-                    await session.send_client_content(
-                        turns=types.Content(
-                            role="user",
-                            parts=[
-                                types.Part(text=greeting_turn)
-                            ],
-                        ),
-                        turn_complete=True,
-                    )
+                    is_initial_greeting_active = True
+                    await session.send_realtime_input(text=greeting_turn)
                 except Exception as e:
+                    is_initial_greeting_active = False
                     print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
                 is_initial_connect = False
             else:
@@ -732,7 +1210,7 @@ async def run_gemini_bridge(
 
             async def sender():
                 """Drain caller audio, write stereo recording, stream to Gemini, monitor barge-in."""
-                nonlocal current_ai_text
+                nonlocal current_ai_text, is_initial_greeting_active, greeting_sent_time
                 consecutive_speech_chunks = 0
                 sent_chunks = 0
                 zero_chunks = 0
@@ -743,6 +1221,18 @@ async def run_gemini_bridge(
                     now = time.time()
                     if now - last_report >= 2.0:
                         last_report = now
+                        if sent_chunks > 0:
+                            print(f"[Audio Link] 🎙️ Caller Audio: RMS={latest_rms} | Streamed: {sent_chunks} chunks to Gemini Live")
+                        elif bridge.total_input_frames == 0:
+                            try:
+                                import outbound_dialer as dialer
+                                if not dialer.is_call_transferred_to_pc() and (now - dialer.get_last_transfer_time() > 10.0):
+                                    print("[Audio Link] ⚠️ Awaiting voice from phone (0 frames received — checking audio routing)...")
+                                    dialer.trigger_transfer_to_pc_async(timeout=4.0)
+                                else:
+                                    print("[Audio Link] ⏳ Call connected on PC — waiting for caller voice...")
+                            except Exception:
+                                pass
 
                     try:
                         pcm16 = bridge.to_ai.get_nowait()
@@ -805,6 +1295,7 @@ async def run_gemini_bridge(
                                 if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
                                     print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
                                     bridge.clear_playback()
+                                    is_initial_greeting_active = False
                                     if current_ai_text:
                                         ai_interrupted = current_ai_text.strip()
                                         if ai_interrupted:
@@ -825,10 +1316,34 @@ async def run_gemini_bridge(
                     else:
                         consecutive_speech_chunks = 0
 
+                    if is_initial_greeting_active:
+                        # Safety timeout: if greeting turn takes more than 10s, resume audio streaming
+                        if time.time() - greeting_sent_time > 10.0:
+                            is_initial_greeting_active = False
+                        else:
+                            # Do not stream realtime input while Gemini is generating/speaking the initial greeting turn
+                            # Prevents barge-in feedback loops or Gemini getting interrupted by silence frames
+                            await asyncio.sleep(0.01)
+                            continue
+
+                    # Audio stream sanitization for Gemini Live:
+                    # 1. Echo suppression while AI is speaking:
+                    # If AI is currently speaking and caller is not interrupting, send pure digital silence
+                    # to prevent the AI's synthesized voice from bleeding back into Gemini Live and halting itself.
+                    audio_to_send = pcm16
+                    if bridge.has_pending_playback():
+                        audio_to_send = b"\x00" * len(pcm16)
+                    elif latest_rms < 130:
+                        # 2. Software Noise Gate:
+                        # Line noise / background mic hiss (< 130 RMS) is clamped to pure digital silence.
+                        # This enables Gemini Live's VAD to immediately detect the end of caller sentences (in 450ms)
+                        # so Gemini answers every question instantly without hesitation.
+                        audio_to_send = b"\x00" * len(pcm16)
+
                     try:
                         await session.send_realtime_input(
                             audio=types.Blob(
-                                data=pcm16,
+                                data=audio_to_send,
                                 mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
                             )
                         )
@@ -841,7 +1356,7 @@ async def run_gemini_bridge(
 
             async def receiver():
                 """Pull Gemini's spoken response, resample, push to jitter buffer, and stream transcripts."""
-                nonlocal current_caller_text, current_ai_text
+                nonlocal current_caller_text, current_ai_text, is_initial_greeting_active
                 while not stop_event.is_set() and not session_stop_event.is_set():
                     try:
                         async for response in session.receive():
@@ -854,6 +1369,7 @@ async def run_gemini_bridge(
 
                             # Server-side interruption (Gemini Live detected user speech)
                             if server_content.interrupted:
+                                is_initial_greeting_active = False
                                 print("[BARGE-IN] Server signaled interruption! Clearing playback buffer.")
                                 bridge.clear_playback()
                                 bridge._out_resample_state = None
@@ -876,6 +1392,7 @@ async def run_gemini_bridge(
                             if server_content.input_transcription and server_content.input_transcription.text:
                                 in_text = server_content.input_transcription.text
                                 current_caller_text += in_text
+                                print(f"[Caller Live]: {in_text.strip()}")
                                 if web_server:
                                     await web_server.broadcast("transcript_chunk", {
                                         "role": "caller",
@@ -924,6 +1441,7 @@ async def run_gemini_bridge(
 
                             # If turn completes, flush jitter buffer & finalize completed turns
                             if server_content.turn_complete:
+                                is_initial_greeting_active = False
                                 bridge.flush_turn_playback()
                                 if current_caller_text:
                                     final_caller = current_caller_text.strip()
@@ -1039,40 +1557,67 @@ async def run_gemini_bridge(
     print("Gemini Live session closed.")
 
 
-async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event):
+async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_outbound: bool = False):
     """Monitors cellular call state and checks Bluetooth HFP health."""
     loop = asyncio.get_running_loop()
     inactive_count = 0
     start_time = time.time()
+    call_connected = not is_outbound  # Inbound calls are already active; outbound calls start in dialing/ringing
 
     while not stop_event.is_set():
-        try:
-            call_active = PhoneCallManager.get_is_call_active()
-        except Exception:
-            call_active = False
+        # Check if outbound call was explicitly cancelled/hung up by user via dashboard
+        if is_outbound and dialer.is_dial_cancelled():
+            print("\n[Outbound Dialer] Outbound call was cancelled.")
+            stop_event.set()
+            break
 
-        if not call_active:
-            inactive_count += 1
-            threshold = 8 if bridge.is_healthy() else 5
+        try:
+            pcm_active = PhoneCallManager.get_is_call_active()
+        except Exception:
+            pcm_active = False
+
+        pl_active = False
+        if is_outbound:
+            try:
+                pl_active = dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected()
+            except Exception:
+                pl_active = False
+
+        call_active = pcm_active or pl_active
+
+        if call_active:
+            call_connected = True
+            inactive_count = 0
+        else:
+            elapsed = time.time() - start_time
+            if is_outbound and not call_connected:
+                # During outbound dialing and ringing, PhoneCallManager is False while remote phone rings.
+                # Allow up to 45 seconds for recipient to pick up before timing out.
+                if elapsed < 45.0:
+                    inactive_count = 0
+                else:
+                    inactive_count += 1
+            else:
+                inactive_count += 1
+
+            threshold = 25 if bridge.is_healthy() else 8
             if inactive_count >= threshold:
-                print("\nCellular call became inactive (PhoneCallManager reported call ended).")
+                print("\nCellular call became inactive (call ended).")
                 stop_event.set()
                 break
-        else:
-            inactive_count = 0
 
-        # Stream health check with a 3.0s grace period
-        if time.time() - start_time > 3.0:
+        # Stream health check with a 5.0s grace period
+        if time.time() - start_time > 5.0:
             if not bridge.is_healthy():
                 print("\n[WARNING] Bluetooth HFP link dropped mid-call! Attempting to reconnect...")
                 bridge.stop()
 
                 reconnected = False
                 for _ in range(5):
-                    if not PhoneCallManager.get_is_call_active() or stop_event.is_set():
+                    if stop_event.is_set():
                         break
                     try:
-                        in_dev, out_dev = await loop.run_in_executor(None, find_hfp_devices, True)
+                        in_dev, out_dev = await loop.run_in_executor(None, lambda: find_hfp_devices(quiet=True, force_refresh=True))
                         if in_dev is not None and out_dev is not None:
                             bridge.input_device = in_dev
                             bridge.output_device = out_dev
@@ -1112,17 +1657,24 @@ async def main_async():
     if cached_in_dev is not None and cached_out_dev is not None:
         try:
             from web_server import clean_device_name
-            devs = sd.query_devices()
-            clean_in = clean_device_name(devs[cached_in_dev]["name"])
-            clean_out = clean_device_name(devs[cached_out_dev]["name"])
+            if isinstance(cached_in_dev, int):
+                devs = sd.query_devices()
+                clean_in = clean_device_name(devs[cached_in_dev]["name"])
+                clean_out = clean_device_name(devs[cached_out_dev]["name"])
+                alias = ""
+                if "(" in clean_in and ")" in clean_in:
+                    m = re.search(r'\(([^)]+)\)', clean_in)
+                    if m:
+                        alias = m.group(1).strip()
+            else:
+                alias = _last_bth_phone_name
+                clean_in = f"Hands-Free HF Audio ({alias})"
+                clean_out = f"Hands-Free HF Audio ({alias})"
+
             web_server.state["hfp_input_name"] = clean_in
             web_server.state["hfp_output_name"] = clean_out
             web_server.state["hfp_connected"] = True
-            if "(" in clean_in and ")" in clean_in:
-                import re
-                m = re.search(r'\(([^)]+)\)', clean_in)
-                if m:
-                    web_server.state["hfp_alias"] = m.group(1).strip()
+            web_server.state["hfp_alias"] = alias
         except Exception:
             pass
 
@@ -1230,6 +1782,7 @@ async def main_async():
         started = False
 
         if is_outbound:
+            dialer.ensure_phone_link_visible()
             call_type = "outbound_gsm"
             print("\n" + "="*50)
             print(f" >>> OUTBOUND CELLULAR CALL TO {outbound_info.get('contact_name')} ({outbound_info.get('phone_number')}) <<<")
@@ -1239,14 +1792,45 @@ async def main_async():
             web_server.state["call_type"] = call_type
             web_server.state["outbound_state"] = outbound_info
             await web_server.broadcast("outbound_ringing", {"outbound": outbound_info})
+
+            # Pre-connect Gemini Live API in the background while the outbound call rings (Zero Pickup Latency)
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if api_key:
+                curr_settings = load_settings()
+                v_name = curr_settings.get("voice_name", "Puck")
+                lang = curr_settings.get("language", "en")
+                base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+                sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
+                live_cfg = types.LiveConnectConfig(
+                    response_modalities=["AUDIO"],
+                    system_instruction=sys_inst,
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=v_name)
+                        )
+                    ),
+                    realtime_input_config=types.RealtimeInputConfig(
+                        automatic_activity_detection=types.AutomaticActivityDetection(
+                            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                            silence_duration_ms=450,
+                            prefix_padding_ms=100,
+                        )
+                    ),
+                    input_audio_transcription=types.AudioTranscriptionConfig(),
+                    output_audio_transcription=types.AudioTranscriptionConfig(),
+                )
+                prewarmer = GeminiPrewarmer(api_key, GEMINI_MODEL, live_cfg)
+                prewarmer.start_prewarm()
         else:
+            dialer.ensure_phone_link_visible()
             call_type = "gsm"
             print("\n" + "="*50)
             print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
             print("="*50)
 
-        # Automatically ensure call audio is transferred to PC (Phone Link switches to 'Transfer to phone')
-        dialer.trigger_transfer_to_pc_async(timeout=12.0)
+        # Automatically ensure call audio is transferred to PC (Phone Link switches to 'Send call to mobile device')
+        dialer.reset_transfer_state()
+        dialer.trigger_transfer_to_pc_async(timeout=15.0)
 
         # Allow Windows Bluetooth SCO hardware link 350ms to settle
         await asyncio.sleep(0.35)
@@ -1259,11 +1843,17 @@ async def main_async():
             bridge = HFPBridge(in_dev=cached_in_dev, out_dev=cached_out_dev)
 
         try:
-            started = bridge.start(is_outbound=is_outbound)
+            loop = asyncio.get_running_loop()
+            started = await loop.run_in_executor(None, lambda: bridge.start(is_outbound=is_outbound))
             if not started:
-                print("[Telephony] Cellular call was not answered, cancelled, or declined. Returning to standby.")
                 if is_outbound:
+                    print("[Telephony] Outbound cellular call was not answered or cancelled. Returning to standby.")
                     dialer.cancel_outbound_dial()
+                else:
+                    print("[Telephony] Cellular incoming call was not answered or audio link could not engage. Returning to standby.")
+                if prewarmer:
+                    await prewarmer.release()
+                    prewarmer = None
                 _call_cancel_cooldown_until = time.time() + 4.0
                 web_server.state["status"] = "standby"
                 web_server.state["call_type"] = None
@@ -1285,7 +1875,7 @@ async def main_async():
             else:
                 # Call is now physically connected and recipient has answered!
                 if is_outbound:
-                    outbound_info = dialer.consume_active_outbound() or outbound_info
+                    outbound_info = dialer.get_active_outbound() or outbound_info
 
                 try:
                     set_in_call_state(True)
@@ -1317,7 +1907,7 @@ async def main_async():
                 stop_event = asyncio.Event()
                 await asyncio.gather(
                     run_gemini_bridge(bridge, stop_event, recorder, web_server, prewarmer=prewarmer, outbound_info=outbound_info),
-                    watch_call_and_hfp(bridge, stop_event),
+                    watch_call_and_hfp(bridge, stop_event, is_outbound=is_outbound),
                 )
         except Exception as e:
             print(f"\n[Gateway Session Error]: {type(e).__name__}: {e}")
@@ -1337,8 +1927,11 @@ async def main_async():
             except Exception:
                 pass
 
+            # ONLY cancel outbound dial if this was genuinely an active outbound call
             try:
-                dialer.cancel_outbound_dial()
+                if is_outbound and dialer.get_active_outbound():
+                    dialer.cancel_outbound_dial()
+                dialer.reset_transfer_state()
             except Exception:
                 pass
 

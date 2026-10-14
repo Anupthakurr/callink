@@ -18,9 +18,14 @@ test_output_*.wav
 .DS_Store
 Thumbs.db
 
-# PyInstaller
+# PyInstaller & Executables
 build/
 dist/
+*.exe
+
+# Scratch exploration scripts
+scratch_*.py
+
 # Recordings and user settings
 recordings/
 settings.json
@@ -29,4 +34,5 @@ settings.json
 # Business Knowledge Base uploads
 knowledge/docs/
 knowledge/documents.json
+
 

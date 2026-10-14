@@ -155,6 +155,22 @@ def probe_hardware_sync():
             _hw_cache["alias"] = ""
             return
 
+        # 0. Check active Windows Bluetooth HFP endpoints (WASAPI)
+        try:
+            from gsm_gemini_gateway import find_active_bthhfenum_endpoints
+            preferred = os.environ.get("PHONE_NAME", "").strip()
+            cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred)
+            if cap_id and ren_id:
+                in_name = f"Hands-Free HF Audio ({phone_name})"
+                out_name = f"Hands-Free HF Audio ({phone_name})"
+                _hw_cache["connected"] = True
+                _hw_cache["in_name"] = in_name
+                _hw_cache["out_name"] = out_name
+                _hw_cache["alias"] = phone_name
+                return
+        except Exception:
+            pass
+
         devices = sd.query_devices()
         in_name = None
         out_name = None
@@ -229,9 +245,9 @@ DEFAULT_SETTINGS = {
     "system_instruction": (
         "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
         "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
-        "Respond immediately and concisely without long preambles."
+        "Always respond immediately and concisely to every caller statement or question without long preambles. Never remain silent or ignore what the caller says."
     ),
-    "vad_threshold": 3600,
+    "vad_threshold": 3200,
     "barge_in_grace_period": 0.35,
     "auto_launch_browser": True
 }
@@ -464,7 +480,7 @@ class WebGatewayServer:
             return web.json_response({"error": f"Dialing failed: {e}"}, status=500)
 
     async def handle_post_dial_cancel(self, request):
-        cancelled = dialer.cancel_outbound_dial()
+        cancelled = dialer.cancel_outbound_dial(force_hangup=True)
         self.state["outbound_state"] = None
         self.state["status"] = "standby"
         self.state["call_type"] = None
