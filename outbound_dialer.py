@@ -321,11 +321,7 @@ def is_phone_link_call_connected() -> bool:
                         for i in range(texts.Length):
                             t = texts.GetElement(i)
                             name = (t.CurrentName or "").strip().lower()
-                            if any(c in name for c in ["calling", "dialing", "connecting"]):
-                                is_ringing = True
-                            if "call on pc" in name:
-                                return True
-                            if any(k in name for k in ["currently in a call", "in a call on", "on your mobile device"]):
+                            if "call on pc" in name or any(k in name for k in ["currently in a call", "in a call on", "on your mobile device"]):
                                 has_incall_banner = True
 
                     # Active connected call strictly requires in-call banner, End Call button, or active transfer button, AND not ringing

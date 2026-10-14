@@ -53,6 +53,7 @@ const PRESET_PROMPTS = {
 // ==========================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
+  endLiveCallUI();
   initTabs();
   fetchStatusPolling();
   initTelemetryWebSocket();
@@ -149,6 +150,7 @@ function initTelemetryWebSocket() {
     ws.onclose = () => {
       console.log('[Telemetry WS] Disconnected. Reconnecting in 2s...');
       if (pingTimer) clearInterval(pingTimer);
+      endLiveCallUI();
       const latencyDisplay = document.getElementById('latencyDisplay');
       if (latencyDisplay) latencyDisplay.textContent = 'Reconnecting...';
       const statusPill = document.getElementById('statusPill');
@@ -314,9 +316,7 @@ function updateGatewayState(state) {
     statusPill.className = 'status-pill status-standby';
     statusText.textContent = 'STANDBY — WAITING FOR CALL';
     hideOutboundDialingBanner();
-    if (appState.callActive) {
-      endLiveCallUI();
-    }
+    endLiveCallUI();
   }
 
   // Device Pill (Top Nav)

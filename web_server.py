@@ -375,7 +375,14 @@ class WebGatewayServer:
     async def handle_index(self, request):
         index_path = os.path.join(WEB_DIR, "index.html")
         if os.path.exists(index_path):
-            return web.FileResponse(index_path)
+            return web.FileResponse(
+                index_path,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }
+            )
         return web.Response(text="Callink Web Platform is initializing...", content_type="text/html")
 
     async def handle_get_status(self, request):
