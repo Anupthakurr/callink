@@ -93,31 +93,30 @@ except Exception:
 
 import sounddevice as sd
 
+import multiprocessing
+multiprocessing.freeze_support()
+
 # Prevent duplicate Callink instances from running simultaneously and fighting over audio/UIA
-_single_instance_mutex = None
+_single_instance_socket = None
 
 def ensure_single_instance():
     """Prevents multiple Callink processes from running concurrently and fighting over Phone Link / audio."""
-    global _single_instance_mutex
-    if os.name != 'nt':
-        return True
+    global _single_instance_socket
+    import socket
     try:
-        kernel32 = ctypes.windll.kernel32
-        ERROR_ALREADY_EXISTS = 183
-        mutex_name = "Global\\Callink_GSM_Gateway_SingleInstance_Mutex"
-        _single_instance_mutex = kernel32.CreateMutexW(None, True, mutex_name)
-        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-            print("\n[System Warning] Another instance of Callink is already running.")
-            print("[System Warning] Opening active dashboard in browser and exiting duplicate instance...")
-            try:
-                import webbrowser
-                webbrowser.open("http://localhost:5000")
-            except Exception:
-                pass
-            sys.exit(0)
+        _single_instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _single_instance_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        _single_instance_socket.bind(('127.0.0.1', 49152))
         return True
-    except Exception:
-        return True
+    except socket.error:
+        print("\n[System Warning] Another instance of Callink is already running.")
+        print("[System Warning] Opening active dashboard in browser and exiting duplicate instance...")
+        try:
+            import webbrowser
+            webbrowser.open("http://localhost:5000")
+        except Exception:
+            pass
+        sys.exit(0)
 
 ensure_single_instance()
 
