@@ -201,11 +201,7 @@ def ensure_phone_link_visible():
 
     import subprocess
     try:
-        subprocess.Popen(["explorer.exe", "shell:AppsFolder\\Microsoft.YourPhone_8wekyb3d8bbwe!App"], shell=False)
-    except Exception:
-        pass
-    try:
-        os.startfile("ms-yourphone:")
+        subprocess.Popen(["explorer.exe", r"shell:AppsFolder\Microsoft.YourPhone_8wekyb3d8bbwe!App"], shell=False)
     except Exception:
         pass
 
@@ -965,28 +961,11 @@ def trigger_system_dialer(clean_number: str) -> bool:
     except Exception as e:
         print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
 
-    # 6. Dedicated Phone Link URI protocol (ms-phone: protocol unique to Phone Link)
-    try:
-        os.startfile(f"ms-phone:{e164_number}")
-        print(f"[Outbound Dialer] Dispatched via ms-phone URI for {e164_number}.")
-        trigger_transfer_to_pc_async(timeout=20.0)
-        return True
-    except Exception:
-        pass
-
-    # 7. Fallback to generic system telephony protocol
-    try:
-        tel_url = f"tel:{e164_number}"
-        try:
-            os.startfile(tel_url)
-        except Exception:
-            webbrowser.open(tel_url)
-        print(f"[Outbound Dialer] Triggered system telephony handler for {e164_number}.")
-        trigger_transfer_to_pc_async(timeout=20.0)
-        return True
-    except Exception as e:
-        print(f"[Outbound Dialer Error] Failed to open telephony handler: {e}")
-        return False
+    # 6. Fallback: Ensure Phone Link is active and let _auto_press_dial handle the dial
+    ensure_phone_link_visible()
+    print(f"[Outbound Dialer] Brought Phone Link to foreground for automated dial of {e164_number}.")
+    trigger_transfer_to_pc_async(timeout=20.0)
+    return True
 
 
 
