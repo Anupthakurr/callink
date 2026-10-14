@@ -994,13 +994,6 @@ class HFPBridge:
                     time.sleep(0.15)
                     if self.is_healthy():
                         print(f"[Audio Link] WASAPI Bluetooth HFP audio bridge running successfully ({self.phone_name}).\n")
-                        # Ensure call audio is routed to PC once recipient answers
-                        try:
-                            import outbound_dialer as dialer
-                            if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
-                                dialer.trigger_transfer_to_pc_async(timeout=6.0)
-                        except Exception:
-                            pass
                         return True
                     else:
                         raise RuntimeError("WASAPI worker threads did not start properly.")
@@ -1029,12 +1022,6 @@ class HFPBridge:
                     self.input_stream.start()
 
                 print("[Audio Link] HFP audio bridge running successfully.\n")
-                try:
-                    import outbound_dialer as dialer
-                    if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
-                        dialer.trigger_transfer_to_pc_async(timeout=6.0)
-                except Exception:
-                    pass
                 return True
             except Exception as e:
                 self.stop()
@@ -1967,9 +1954,6 @@ async def main_async():
         except Exception:
             pass
 
-        # Automatically ensure call audio is transferred to PC if not already triggered
-        if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
-            dialer.trigger_transfer_to_pc_async(timeout=60.0)
 
         # Allow Windows Bluetooth SCO hardware link 800ms to settle
         await asyncio.sleep(0.8)
