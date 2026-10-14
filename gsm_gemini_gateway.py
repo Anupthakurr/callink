@@ -2,6 +2,10 @@ import sys
 import os
 import traceback
 
+# Prevent duplicate execution if imported by other modules (e.g. web_server)
+if __name__ == '__main__':
+    sys.modules['gsm_gemini_gateway'] = sys.modules.get('__main__')
+
 sys.coinit_flags = 0
 
 # Support windowed / no-console execution with file logging
@@ -50,11 +54,12 @@ class TeeLogger:
             try: self.orig_stream.reconfigure(**kwargs)
             except Exception: pass
 
-_orig_stdout = sys.stdout
-_orig_stderr = sys.stderr
-logger = TeeLogger(_orig_stdout)
-sys.stdout = logger
-sys.stderr = logger
+if not isinstance(sys.stdout, TeeLogger):
+    _orig_stdout = sys.stdout
+    _orig_stderr = sys.stderr
+    logger = TeeLogger(_orig_stdout)
+    sys.stdout = logger
+    sys.stderr = logger
 
 try:
     if hasattr(sys.stdout, "reconfigure"):
@@ -434,12 +439,6 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
         return cap_id, ren_id
 
     # Fallback to PortAudio/sounddevice
-    if force_refresh:
-        try:
-            sd._terminate()
-            sd._initialize()
-        except Exception:
-            pass
 
     try:
         devices = sd.query_devices()
@@ -661,71 +660,116 @@ class HFPBridge:
             print("HFP OUTPUT CALLBACK ERROR:", e)
 
     def _capture_worker(self):
-        """Native WASAPI Capture Worker Thread (Microphone from phone over Bluetooth SCO)."""
+        """Native WASAPI Capture Worker Thread (Microphone from phone over Bluetooth SCO).
+        Includes starvation detection: if the capture client delivers zero packets for >3 seconds
+        after a successful Start(), the client is torn down and re-created, which forces Windows
+        to re-open the SCO channel that may have been in a phantom state after Transfer-to-PC."""
         comtypes.CoInitialize()
         try:
-            enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
-            dev = enum_obj.GetDevice(self.input_device)
-            p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
-            client = p_client.QueryInterface(IAudioClient)
-
-            wfx = WAVEFORMATEX()
-            wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
-            wfx.nChannels = 1
-            wfx.nSamplesPerSec = 16000
-            wfx.wBitsPerSample = 16
-            wfx.nBlockAlign = 2
-            wfx.nAvgBytesPerSec = 32000
-            wfx.cbSize = 0
-
-            # Automatic hardware conversion to device format with standard quality resampler
-            flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
-            client.Initialize(0, flags, 10000000, 0, ctypes.byref(wfx), None)
-            p_cap = client.GetService(ctypes.byref(IID_IAudioCaptureClient))
-            capture = p_cap.QueryInterface(IAudioCaptureClient)
-
-            client.Start()
             chunk_remainder = bytearray()
-
             while self._wasapi_running:
-                got_packet = False
-                while self._wasapi_running:
-                    try:
-                        pkt = capture.GetNextPacketSize()
-                        if pkt == 0:
+                client = None
+                try:
+                    enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
+                    dev = enum_obj.GetDevice(self.input_device)
+                    p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
+                    client = p_client.QueryInterface(IAudioClient)
+
+                    wfx = WAVEFORMATEX()
+                    wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
+                    wfx.nChannels = 1
+                    wfx.nSamplesPerSec = 16000
+                    wfx.wBitsPerSample = 16
+                    wfx.nBlockAlign = 2
+                    wfx.nAvgBytesPerSec = 32000
+                    wfx.cbSize = 0
+
+                    # Automatic hardware conversion to device format with standard quality resampler
+                    flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+                    client.Initialize(0, flags, 10000000, 0, ctypes.byref(wfx), None)
+                    p_cap = client.GetService(ctypes.byref(IID_IAudioCaptureClient))
+                    capture = p_cap.QueryInterface(IAudioCaptureClient)
+
+                    client.Start()
+
+                    last_data_time = time.time()
+                    ever_received_data = False
+                    consecutive_errs = 0
+
+                    while self._wasapi_running:
+                        got_packet = False
+                        while self._wasapi_running:
+                            try:
+                                pkt = capture.GetNextPacketSize()
+                                consecutive_errs = 0
+                            except Exception:
+                                consecutive_errs += 1
+                                if consecutive_errs > 8:
+                                    break
+                                time.sleep(0.02)
+                                continue
+
+                            if pkt == 0:
+                                break
+                            try:
+                                p_data, num_frames, flags_val, dev_pos, qpc_pos = capture.GetBuffer()
+                            except Exception:
+                                consecutive_errs += 1
+                                if consecutive_errs > 8:
+                                    break
+                                time.sleep(0.02)
+                                continue
+
+                            if num_frames == 0 or not p_data:
+                                try:
+                                    capture.ReleaseBuffer(0)
+                                except Exception:
+                                    pass
+                                break
+
+                            got_packet = True
+                            ever_received_data = True
+                            last_data_time = time.time()
+                            byte_count = num_frames * 2
+                            if flags_val & 0x02:  # AUDCLNT_BUFFERFLAGS_SILENT
+                                raw_data = b"\x00" * byte_count
+                            else:
+                                raw_data = ctypes.string_at(p_data, byte_count)
+                            try:
+                                capture.ReleaseBuffer(num_frames)
+                            except Exception:
+                                break
+
+                            chunk_remainder.extend(raw_data)
+                            while len(chunk_remainder) >= 640:
+                                pcm16 = bytes(chunk_remainder[:640])
+                                del chunk_remainder[:640]
+                                self.total_input_frames += 320
+                                try:
+                                    self.to_ai.put_nowait(pcm16)
+                                except queue.Full:
+                                    pass
+
+                        if consecutive_errs > 8:
+                            # Too many consecutive COM errors — force re-init
                             break
-                        p_data, num_frames, flags_val, dev_pos, qpc_pos = capture.GetBuffer()
-                    except Exception:
-                        break
 
-                    if num_frames == 0 or not p_data:
-                        break
+                        if not got_packet:
+                            time.sleep(0.01)
 
-                    got_packet = True
-                    byte_count = num_frames * 2
-                    if flags_val & 0x02:  # AUDCLNT_BUFFERFLAGS_SILENT
-                        raw_data = b"\x00" * byte_count
-                    else:
-                        raw_data = ctypes.string_at(p_data, byte_count)
-                    capture.ReleaseBuffer(num_frames)
-
-                    chunk_remainder.extend(raw_data)
-                    while len(chunk_remainder) >= 640:
-                        pcm16 = bytes(chunk_remainder[:640])
-                        del chunk_remainder[:640]
-                        self.total_input_frames += 320
+                except Exception as ex:
+                    # Device state transition (e.g. transfer to PC / SCO connect)
+                    if self._wasapi_running:
+                        time.sleep(0.25)
+                finally:
+                    if client:
                         try:
-                            self.to_ai.put_nowait(pcm16)
-                        except queue.Full:
+                            client.Stop()
+                        except Exception:
                             pass
-
-                if not got_packet:
-                    time.sleep(0.005)
-
-            client.Stop()
-        except Exception as e:
-            if self._wasapi_running:
-                print(f"[WASAPI Capture Worker Error]: {e}")
+                    # Brief pause before re-init to let Bluetooth SCO settle
+                    if self._wasapi_running:
+                        time.sleep(0.5)
         finally:
             comtypes.CoUninitialize()
 
@@ -733,83 +777,111 @@ class HFPBridge:
         """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO)."""
         comtypes.CoInitialize()
         try:
-            enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
-            dev = enum_obj.GetDevice(self.output_device)
-            p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
-            client = p_client.QueryInterface(IAudioClient)
-
-            wfx = WAVEFORMATEX()
-            wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
-            wfx.nChannels = 1
-            wfx.nSamplesPerSec = 16000
-            wfx.wBitsPerSample = 16
-            wfx.nBlockAlign = 2
-            wfx.nAvgBytesPerSec = 32000
-            wfx.cbSize = 0
-
-            flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
-            client.Initialize(0, flags, 1000000, 0, ctypes.byref(wfx), None)
-            buf_size = client.GetBufferSize()
-
-            p_rend = client.GetService(ctypes.byref(IID_IAudioRenderClient))
-            render = p_rend.QueryInterface(IAudioRenderClient)
-
-            client.Start()
-
             while self._wasapi_running:
-                padding = client.GetCurrentPadding()
-                available = buf_size - padding
-                if available >= 320:  # 20ms frame blocks @ 16kHz
-                    frames_to_write = 320
-                    bytes_needed = frames_to_write * 2
-                    raw_chunk = b""
+                client = None
+                try:
+                    enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
+                    dev = enum_obj.GetDevice(self.output_device)
+                    p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
+                    client = p_client.QueryInterface(IAudioClient)
 
-                    with self._playback_lock:
-                        if self._is_buffering:
-                            pass
-                        elif len(self._playback_bytes) == 0:
-                            self._is_buffering = True
-                            self.playback_started_at = None
-                        else:
-                            if self.playback_started_at is None:
-                                self.playback_started_at = time.time()
-                            bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
-                            raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
-                            del self._playback_bytes[:bytes_to_pull]
-                            if len(self._playback_bytes) == 0:
-                                self._is_buffering = True
-                                self.playback_started_at = None
+                    wfx = WAVEFORMATEX()
+                    wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
+                    wfx.nChannels = 1
+                    wfx.nSamplesPerSec = 16000
+                    wfx.wBitsPerSample = 16
+                    wfx.nBlockAlign = 2
+                    wfx.nAvgBytesPerSec = 32000
+                    wfx.cbSize = 0
 
-                    p_buffer = render.GetBuffer(frames_to_write)
-                    if raw_chunk:
-                        chunk_len = len(raw_chunk)
-                        ctypes.memmove(p_buffer, raw_chunk, chunk_len)
-                        if chunk_len < bytes_needed:
-                            ctypes.memset(ctypes.cast(p_buffer, ctypes.c_void_p).value + chunk_len, 0, bytes_needed - chunk_len)
-                        self.total_output_frames += frames_to_write
-                        out_bytes = raw_chunk.ljust(bytes_needed, b"\x00")
-                    else:
-                        ctypes.memset(p_buffer, 0, bytes_needed)
-                        out_bytes = b"\x00" * bytes_needed
+                    flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+                    client.Initialize(0, flags, 1000000, 0, ctypes.byref(wfx), None)
+                    buf_size = client.GetBufferSize()
 
-                    render.ReleaseBuffer(frames_to_write, 0)
-                    self.last_played_chunk = out_bytes
+                    p_rend = client.GetService(ctypes.byref(IID_IAudioRenderClient))
+                    render = p_rend.QueryInterface(IAudioRenderClient)
 
-                    try:
-                        self.ai_record_queue.put_nowait(out_bytes)
-                    except queue.Full:
+                    client.Start()
+
+                    consecutive_errs = 0
+                    while self._wasapi_running:
                         try:
-                            self.ai_record_queue.get_nowait()
-                            self.ai_record_queue.put_nowait(out_bytes)
+                            padding = client.GetCurrentPadding()
+                            consecutive_errs = 0
+                        except Exception:
+                            consecutive_errs += 1
+                            if consecutive_errs > 8:
+                                break
+                            time.sleep(0.02)
+                            continue
+
+                        available = buf_size - padding
+                        if available >= 320:  # 20ms frame blocks @ 16kHz
+                            frames_to_write = 320
+                            bytes_needed = frames_to_write * 2
+                            raw_chunk = b""
+
+                            with self._playback_lock:
+                                if self._is_buffering:
+                                    pass
+                                elif len(self._playback_bytes) == 0:
+                                    self._is_buffering = True
+                                    self.playback_started_at = None
+                                else:
+                                    if self.playback_started_at is None:
+                                        self.playback_started_at = time.time()
+                                    bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
+                                    raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
+                                    del self._playback_bytes[:bytes_to_pull]
+                                    if len(self._playback_bytes) == 0:
+                                        self._is_buffering = True
+                                        self.playback_started_at = None
+
+                            try:
+                                p_buffer = render.GetBuffer(frames_to_write)
+                            except Exception:
+                                time.sleep(0.01)
+                                continue
+
+                            if raw_chunk:
+                                chunk_len = len(raw_chunk)
+                                ctypes.memmove(p_buffer, raw_chunk, chunk_len)
+                                if chunk_len < bytes_needed:
+                                    ctypes.memset(ctypes.cast(p_buffer, ctypes.c_void_p).value + chunk_len, 0, bytes_needed - chunk_len)
+                                self.total_output_frames += frames_to_write
+                                out_bytes = raw_chunk.ljust(bytes_needed, b"\x00")
+                            else:
+                                ctypes.memset(p_buffer, 0, bytes_needed)
+                                out_bytes = b"\x00" * bytes_needed
+
+                            try:
+                                render.ReleaseBuffer(frames_to_write, 0)
+                            except Exception:
+                                pass
+
+                            self.last_played_chunk = out_bytes
+
+                            try:
+                                self.ai_record_queue.put_nowait(out_bytes)
+                            except queue.Full:
+                                try:
+                                    self.ai_record_queue.get_nowait()
+                                    self.ai_record_queue.put_nowait(out_bytes)
+                                except Exception:
+                                    pass
+                        else:
+                            time.sleep(0.005)
+
+                except Exception as ex:
+                    # Device state transition (e.g. transfer to PC / SCO connect)
+                    if self._wasapi_running:
+                        time.sleep(0.25)
+                finally:
+                    if client:
+                        try:
+                            client.Stop()
                         except Exception:
                             pass
-                else:
-                    time.sleep(0.005)
-
-            client.Stop()
-        except Exception as e:
-            if self._wasapi_running:
-                print(f"[WASAPI Render Worker Error]: {e}")
         finally:
             comtypes.CoUninitialize()
 
@@ -925,7 +997,8 @@ class HFPBridge:
                         # Ensure call audio is routed to PC once recipient answers
                         try:
                             import outbound_dialer as dialer
-                            dialer.trigger_transfer_to_pc_async(timeout=6.0)
+                            if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
+                                dialer.trigger_transfer_to_pc_async(timeout=6.0)
                         except Exception:
                             pass
                         return True
@@ -958,7 +1031,8 @@ class HFPBridge:
                 print("[Audio Link] HFP audio bridge running successfully.\n")
                 try:
                     import outbound_dialer as dialer
-                    dialer.trigger_transfer_to_pc_async(timeout=6.0)
+                    if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
+                        dialer.trigger_transfer_to_pc_async(timeout=6.0)
                 except Exception:
                     pass
                 return True
@@ -1655,7 +1729,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
                     if stop_event.is_set():
                         break
                     try:
-                        in_dev, out_dev = await loop.run_in_executor(None, lambda: find_hfp_devices(quiet=True, force_refresh=True))
+                        in_dev, out_dev = await loop.run_in_executor(None, lambda: find_hfp_devices(quiet=True, force_refresh=False))
                         if in_dev is not None and out_dev is not None:
                             bridge.input_device = in_dev
                             bridge.output_device = out_dev
@@ -1752,8 +1826,14 @@ async def main_async():
                 call_active = False
                 call_incoming = False
 
+            pl_call_active = False
+            try:
+                pl_call_active = dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected()
+            except Exception:
+                pl_call_active = False
+
             # Strictly ignore VoIP calls ringing or active on the PC (WhatsApp Desktop, Teams, Skype, Zoom)
-            if (call_active or call_incoming) and is_pc_voip_call_active():
+            if (call_active or call_incoming or pl_call_active) and is_pc_voip_call_active():
                 now = time.time()
                 if now - last_voip_notice > 5.0:
                     last_voip_notice = now
@@ -1761,11 +1841,11 @@ async def main_async():
                 await asyncio.sleep(0.3)
                 continue
 
-            # Break standby loop if an outbound dial is pending OR WinRT reports active call (not in cancel cooldown)
+            # Break standby loop if an outbound dial is pending OR WinRT/Phone Link reports active call (not in cancel cooldown)
             outbound_pending = dialer.get_active_outbound()
             if outbound_pending:
                 break
-            if call_active:
+            if call_active or pl_call_active:
                 if time.time() < _call_cancel_cooldown_until:
                     await asyncio.sleep(0.2)
                     continue
@@ -1866,15 +1946,21 @@ async def main_async():
             print(" >>> CELLULAR GSM CALL ACTIVE - ENGAGING AI VOICE GATEWAY <<<")
             print("="*50)
 
-        # Automatically ensure call audio is transferred to PC (Phone Link switches to 'Send call to mobile device')
-        dialer.reset_transfer_state()
-        dialer.trigger_transfer_to_pc_async(timeout=15.0)
+        # Mark in-call state immediately across server and background daemons to halt polling and protect Bluetooth SCO
+        try:
+            set_in_call_state(True)
+        except Exception:
+            pass
+
+        # Automatically ensure call audio is transferred to PC if not already triggered
+        if not dialer.is_transfer_clicked() and not dialer.is_call_transferred_to_pc():
+            dialer.trigger_transfer_to_pc_async(timeout=60.0)
 
         # Allow Windows Bluetooth SCO hardware link 800ms to settle
         await asyncio.sleep(0.8)
 
         # Re-resolve endpoints to capture freshly activated WASAPI or updated endpoints
-        active_in, active_out = find_hfp_devices(quiet=True, force_refresh=True)
+        active_in, active_out = find_hfp_devices(quiet=True, force_refresh=False)
         if active_in is not None and active_out is not None:
             bridge = HFPBridge(in_dev=active_in, out_dev=active_out)
         else:
@@ -1884,6 +1970,10 @@ async def main_async():
             loop = asyncio.get_running_loop()
             started = await loop.run_in_executor(None, lambda: bridge.start(is_outbound=is_outbound))
             if not started:
+                try:
+                    set_in_call_state(False)
+                except Exception:
+                    pass
                 if is_outbound:
                     print("[Telephony] Outbound cellular call was not answered or cancelled. Returning to standby.")
                     dialer.cancel_outbound_dial()
@@ -1969,7 +2059,7 @@ async def main_async():
             try:
                 if is_outbound and dialer.get_active_outbound():
                     dialer.cancel_outbound_dial()
-                dialer.reset_transfer_state()
+                dialer.reset_transfer_state(force=True)
             except Exception:
                 pass
 

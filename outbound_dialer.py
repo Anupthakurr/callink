@@ -158,16 +158,29 @@ def find_phone_link_window():
     if not hwnds:
         return None
     import ctypes
+    from ctypes import wintypes
     user32 = ctypes.windll.user32
-    # Prioritize active in-call window ("call on pc", "call on mobile")
+
+    # Prioritize active in-call popup window
+    # 1. By title substring if present
     for h in hwnds:
         length = user32.GetWindowTextLengthW(h)
         if length > 0:
             buf = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(h, buf, length + 1)
             val = buf.value.lower()
-            if "call on" in val:
+            if "call on" in val or "calls" in val:
                 return h
+
+    # 2. In-call popup is a compact floating window (typically width < 650 and height < 500)
+    rect = wintypes.RECT()
+    for h in hwnds:
+        if user32.GetWindowRect(h, ctypes.byref(rect)):
+            w = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if 200 < w < 650 and 120 < height < 500:
+                return h
+
     return hwnds[0]
 
 
@@ -178,6 +191,12 @@ def ensure_phone_link_visible():
     h = find_phone_link_window()
     if h and user32.IsWindowVisible(h):
         user32.ShowWindow(h, 9)  # SW_RESTORE
+        try:
+            user32.SetForegroundWindow(h)
+            user32.SetWindowPos(h, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)  # HWND_TOPMOST, SWP_SHOWWINDOW
+            user32.SetWindowPos(h, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)  # HWND_NOTOPMOST
+        except Exception:
+            pass
         return
 
     import subprocess
@@ -209,10 +228,15 @@ def is_transfer_clicked() -> bool:
     return _transfer_clicked
 
 
-def reset_transfer_state():
+def reset_transfer_state(force: bool = False):
     """Resets audio transfer state tracking for a new cellular call."""
     global _last_transfer_action_time, _audio_transferred_to_pc, _transfer_clicked
     with _transfer_lock:
+        now = time.time()
+        # Cooldown guard: Never reset if a transfer occurred less than 15s ago unless forced
+        if not force and _last_transfer_action_time > 0 and (now - _last_transfer_action_time < 15.0):
+            print(f"[Audio Router] Guarding active transfer state ({now - _last_transfer_action_time:.1f}s since transfer). Reset skipped.")
+            return
         _last_transfer_action_time = 0.0
         _audio_transferred_to_pc = False
         _transfer_clicked = False
@@ -223,7 +247,7 @@ def get_last_transfer_time() -> float:
     return _last_transfer_action_time
 
 
-def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
+def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
     """
     Monitors Phone Link during an active or outgoing cellular call and ensures
     call audio is routed to PC (switching the button to 'Transfer to phone' or 'Send call to mobile device').
@@ -240,10 +264,12 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
 
     try:
         now = time.time()
-        # Hard guard: If already confirmed on PC or already clicked, never click again during this call
+        # Hard guards: If already confirmed on PC or already clicked, never click again during this call
         if _audio_transferred_to_pc:
             return True
         if _transfer_clicked:
+            return True
+        if _last_transfer_action_time > 0 and (now - _last_transfer_action_time < 20.0):
             return True
 
         import ctypes
@@ -271,10 +297,16 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
         while time.time() - start_time < timeout:
             _attach_desktop()
 
+            # Re-check guards on every loop iteration
+            if _audio_transferred_to_pc or _transfer_clicked:
+                return True
+            if _last_transfer_action_time > 0 and (time.time() - _last_transfer_action_time < 20.0):
+                return True
+
             # Find all visible Phone Link and active call windows
             candidate_hwnds = find_all_phone_link_windows()
 
-            # 1. Immediate Window Title Check: "Call on PC" means audio is 100% already on PC!
+            # 1. Immediate Window Title Check
             for hwnd in candidate_hwnds:
                 if user32.IsWindowVisible(hwnd):
                     length = user32.GetWindowTextLengthW(hwnd)
@@ -282,7 +314,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                         buf = ctypes.create_unicode_buffer(length + 1)
                         user32.GetWindowTextW(hwnd, buf, length + 1)
                         title_val = buf.value.lower()
-                        if "call on pc" in title_val or "on pc" in title_val:
+                        if any(k in title_val for k in ["call on pc", "on pc", "call on this pc"]):
                             print(f"[Audio Router] Phone Link window title confirms call audio is already routed to PC ('{buf.value}').")
                             _audio_transferred_to_pc = True
                             _transfer_clicked = True
@@ -311,6 +343,23 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                             el = uia.ElementFromHandle(hwnd)
                             if not el:
                                 continue
+
+                            # Check window-level text controls for 'Call on PC'
+                            try:
+                                win_texts = el.FindAll(TreeScope_Descendants, txt_cond)
+                                if win_texts:
+                                    for wt_idx in range(win_texts.Length):
+                                        wt = win_texts.GetElement(wt_idx)
+                                        wt_name = (wt.CurrentName or "").strip().lower()
+                                        if any(k in wt_name for k in ["call on pc", "on pc", "call on this pc", "pc audio"]):
+                                            print(f"[Audio Router] Window text confirms call is already routed to PC ('{wt_name}').")
+                                            _audio_transferred_to_pc = True
+                                            _transfer_clicked = True
+                                            _last_transfer_action_time = time.time()
+                                            return True
+                            except Exception:
+                                pass
+
                             btns = el.FindAll(TreeScope_Descendants, btn_cond)
                             if not btns or btns.Length == 0:
                                 continue
@@ -324,10 +373,16 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                 aid_l = aid.lower()
                                 help_l = help_txt.lower()
 
-                                # Reject non-transfer buttons (end, mute, dialpad, etc.)
-                                if any(f in name_l for f in ["end", "hang", "decline", "cancel", "mute", "mic", "keypad", "dialpad", "hold", "add", "swap", "dismiss", "close"]):
+                                # Reject non-transfer buttons (end, mute, dialpad, bluetooth, device selection, etc.)
+                                reject_keywords = [
+                                    "end", "hang", "decline", "cancel", "mute", "mic",
+                                    "keypad", "dialpad", "hold", "add", "swap", "dismiss",
+                                    "close", "bluetooth", "device selection", "more options",
+                                    "expand", "collapse", "pane", "menu"
+                                ]
+                                if any(f in name_l for f in reject_keywords):
                                     continue
-                                if any(f in aid_l for f in ["end", "hang", "decline", "cancel", "mute", "mic", "keypad", "dialpad", "hold", "add", "swap", "dismiss", "close"]):
+                                if any(f in aid_l for f in reject_keywords):
                                     continue
 
                                 # Collect text from any inner child elements
@@ -345,17 +400,19 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                 all_text = " ".join([name_l, help_l] + child_texts).strip()
 
                                 # (A) ALREADY ON PC check:
-                                # When audio is routed to PC, Phone Link button offers to transfer back to phone!
+                                # When audio is routed to PC, Phone Link button offers to transfer back to mobile/phone!
                                 is_on_pc = False
                                 if any(k in all_text for k in [
                                     "transfer to phone", "transfer call to phone",
                                     "send call to mobile", "send to phone", "send to mobile",
-                                    "to phone", "to mobile", "use phone"
+                                    "transfer to mobile", "transfer call to mobile",
+                                    "to phone", "to mobile", "use phone", "use mobile",
+                                    "call on pc", "on pc"
                                 ]):
                                     is_on_pc = True
 
-                                # Check TogglePattern (ToggleState 1 = On = PC)
-                                if not is_on_pc:
+                                # Check TogglePattern only if the button is specifically transfer/PC/phone related
+                                if not is_on_pc and any(k in all_text for k in ["transfer", "pc", "phone", "mobile"]):
                                     try:
                                         tog_p = b.GetCurrentPattern(UIA_TogglePatternId)
                                         if tog_p:
@@ -375,23 +432,31 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                 # (B) TRANSFER TO PC check:
                                 # Target button to transfer audio from phone to PC
                                 is_transfer_btn = False
-                                if ("to pc" in all_text or "transfer call to pc" in all_text or "transfer to pc" in all_text) and not any(m in all_text for m in ["to phone", "to mobile"]):
-                                    is_transfer_btn = True
-                                elif ("pc" in all_text or "computer" in all_text) and not any(m in all_text for m in ["phone", "mobile"]):
+                                if any(p in all_text for p in [
+                                    "transfer to pc", "transfer call to pc", "send call to pc",
+                                    "send to pc", "to pc", "switch to pc"
+                                ]) and not any(m in all_text for m in ["to phone", "to mobile", "on pc"]):
                                     is_transfer_btn = True
 
                                 if is_transfer_btn:
                                     # Hard guard: If already clicked once, NEVER click again!
-                                    if _transfer_clicked:
+                                    if _transfer_clicked or _audio_transferred_to_pc or (time.time() - _last_transfer_action_time < 20.0):
                                         _audio_transferred_to_pc = True
                                         return True
+
+                                    # Check if the button is enabled (not mid-transition)
+                                    try:
+                                        if not b.CurrentIsEnabled:
+                                            continue
+                                    except Exception:
+                                        pass
 
                                     # Immediately set flags BEFORE invoking to prevent any re-entry
                                     _transfer_clicked = True
                                     _audio_transferred_to_pc = True
                                     _last_transfer_action_time = time.time()
 
-                                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Transferring to PC...")
+                                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}', Text='{all_text}'). Transferring to PC...")
                                     clicked = False
                                     try:
                                         pattern = b.GetCurrentPattern(UIA_InvokePatternId)
@@ -425,8 +490,8 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                                         except Exception as ex:
                                             print(f"[Audio Router] Mouse click fallback notice: {ex}")
 
-                                    time.sleep(0.8)
-                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Transfer to phone'.")
+                                    time.sleep(1.5)
+                                    print("[Audio Router] Call audio transferred to PC! Locked for this session.")
                                     return True
                         except Exception:
                             pass
@@ -435,7 +500,7 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
             except Exception:
                 pass
 
-            time.sleep(0.4)
+            time.sleep(0.3)
 
         return _audio_transferred_to_pc
     finally:
@@ -456,7 +521,7 @@ def is_phone_link_call_connected() -> bool:
     import ctypes
     user32 = ctypes.windll.user32
 
-    # 1. Immediate Title Check: "Call on PC" proves call was answered and transferred to PC!
+    # 1. Immediate Title Check
     for h in hwnds:
         length = user32.GetWindowTextLengthW(h)
         if length > 0:
@@ -515,10 +580,13 @@ def is_phone_link_call_connected() -> bool:
                             name = (t.CurrentName or "").strip().lower()
                             if any(c in name for c in ["calling", "dialing", "connecting"]):
                                 is_ringing = True
-                            # Look for active call duration timer (e.g. 00:01, 0:05, 01:23)
-                            m = re.match(r"^0?(\d):(\d{2})$", name)
+                            if "call on pc" in name:
+                                return True
+                            # Look for active call duration timer (e.g. 0:01, 00:01, 01:31, 12:45)
+                            m = re.match(r"^\d{1,2}:\d{2}$", name)
                             if m:
-                                sec = int(m.group(1)) * 60 + int(m.group(2))
+                                parts = name.split(":")
+                                sec = int(parts[0]) * 60 + int(parts[1])
                                 if sec > 0:
                                     has_timer = True
 
@@ -595,7 +663,7 @@ def is_phone_link_call_present() -> bool:
         return False
 
 
-def trigger_transfer_to_pc_async(timeout: float = 15.0):
+def trigger_transfer_to_pc_async(timeout: float = 60.0):
     """Launches ensure_call_transferred_to_pc in a daemon background thread."""
     threading.Thread(target=ensure_call_transferred_to_pc, args=(timeout,), daemon=True).start()
 
@@ -940,6 +1008,7 @@ def start_outbound_dial(
     notes = lead_notes.strip()
 
     clear_outbound_cancelled()
+    reset_transfer_state(force=True)
 
     global _active_outbound
     with _lock:

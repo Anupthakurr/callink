@@ -128,90 +128,52 @@ def set_in_call_state(in_call: bool):
     _hw_cache["in_call"] = in_call
 
 def probe_hardware_sync():
-    """Lightweight, non-blocking check of Bluetooth radio and HFP audio endpoints."""
+    """Lightweight, non-blocking check of active Bluetooth HFP endpoints via Windows MMDevices registry.
+    Completely avoids PortAudio / sounddevice driver inquiries (which reset kernel streaming pins
+    and drop active Bluetooth SCO links)."""
     try:
-        radio_on = True
-        try:
-            import winrt.windows.devices.bluetooth as bt
-            import winrt.windows.devices.radios as radios
-
-            async def _check_radio():
-                adapter = await bt.BluetoothAdapter.get_default_async()
-                if adapter:
-                    radio = await adapter.get_radio_async()
-                    return radio and radio.state == radios.RadioState.ON
-                return False
-
-            loop = asyncio.new_event_loop()
-            radio_on = loop.run_until_complete(_check_radio())
-            loop.close()
-        except Exception:
-            radio_on = True
-
-        if not radio_on:
-            _hw_cache["connected"] = False
-            _hw_cache["in_name"] = None
-            _hw_cache["out_name"] = None
-            _hw_cache["alias"] = ""
+        from gsm_gemini_gateway import find_active_bthhfenum_endpoints
+        preferred = os.environ.get("PHONE_NAME", "").strip()
+        cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred)
+        if cap_id and ren_id:
+            in_name = f"Hands-Free HF Audio ({phone_name})"
+            out_name = f"Hands-Free HF Audio ({phone_name})"
+            _hw_cache["connected"] = True
+            _hw_cache["in_name"] = in_name
+            _hw_cache["out_name"] = out_name
+            _hw_cache["alias"] = phone_name
             return
-
-        # 0. Check active Windows Bluetooth HFP endpoints (WASAPI)
-        try:
-            from gsm_gemini_gateway import find_active_bthhfenum_endpoints
-            preferred = os.environ.get("PHONE_NAME", "").strip()
-            cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred)
-            if cap_id and ren_id:
-                in_name = f"Hands-Free HF Audio ({phone_name})"
-                out_name = f"Hands-Free HF Audio ({phone_name})"
-                _hw_cache["connected"] = True
-                _hw_cache["in_name"] = in_name
-                _hw_cache["out_name"] = out_name
-                _hw_cache["alias"] = phone_name
-                return
-        except Exception:
-            pass
-
-        devices = sd.query_devices()
-        in_name = None
-        out_name = None
-
-        # 1. Primary: Hands-Free HF Audio (Phone Link cellular bridge)
-        for d in devices:
-            name = d.get("name", "")
-            if "hands-free hf audio" in name.lower():
-                if d.get("max_input_channels", 0) > 0 and in_name is None:
-                    in_name = clean_device_name(name)
-                if d.get("max_output_channels", 0) > 0 and out_name is None:
-                    out_name = clean_device_name(name)
-
-        # 2. Secondary fallback: any other hands-free device
-        if not (in_name and out_name):
-            for d in devices:
-                name = d.get("name", "")
-                if "hands-free" in name.lower():
-                    if d.get("max_input_channels", 0) > 0 and in_name is None:
-                        in_name = clean_device_name(name)
-                    if d.get("max_output_channels", 0) > 0 and out_name is None:
-                        out_name = clean_device_name(name)
-
-        connected = (in_name is not None and out_name is not None)
-        _hw_cache["connected"] = connected
-        _hw_cache["in_name"] = in_name
-        _hw_cache["out_name"] = out_name
-
-        alias = ""
-        if in_name and "(" in in_name and ")" in in_name:
-            m = re.search(r'\(([^)]+)\)', in_name)
-            if m:
-                alias = m.group(1).strip()
-        _hw_cache["alias"] = alias
     except Exception:
         pass
 
+    _hw_cache["connected"] = False
+    _hw_cache["in_name"] = None
+    _hw_cache["out_name"] = None
+    _hw_cache["alias"] = ""
+
+def is_call_active_globally() -> bool:
+    """Detects whether a cellular call is active across all telephony subsystems."""
+    if _hw_cache.get("in_call", False):
+        return True
+    try:
+        import outbound_dialer as dialer
+        if dialer.is_phone_link_call_present() or dialer.is_phone_link_call_connected():
+            return True
+    except Exception:
+        pass
+    try:
+        from winrt.windows.applicationmodel.calls import PhoneCallManager
+        if PhoneCallManager.get_is_call_active() or PhoneCallManager.get_is_call_incoming():
+            return True
+    except Exception:
+        pass
+    return False
+
 def _hardware_monitor_worker():
     while True:
-        time.sleep(4.0)
-        if _hw_cache.get("in_call", False):
+        time.sleep(10.0)
+        # Never poll hardware or touch endpoints while a cellular call is ringing, connecting, or active
+        if is_call_active_globally():
             continue
         probe_hardware_sync()
 
