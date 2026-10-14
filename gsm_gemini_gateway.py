@@ -1191,13 +1191,6 @@ async def run_gemini_bridge(
     is_initial_connect = True
 
     while not stop_event.is_set():
-        # Verify cellular call is still active
-        try:
-            if not PhoneCallManager.get_is_call_active():
-                break
-        except Exception:
-            pass
-
         session_stop_event = asyncio.Event()
 
         # Check if we have a pre-warmed session ready from incoming ring
@@ -1244,14 +1237,14 @@ async def run_gemini_bridge(
                         except Exception:
                             pass
 
-                        # 2. Check audio line for recipient voice (RMS > vad_threshold)
-                        # Wait at least 2.5s to bypass carrier dialing tones and connection clicks
+                        # 2. Check audio line for recipient voice (RMS > 450)
+                        # Wait at least 1.5s to bypass carrier dialing tones and connection clicks
                         elapsed = time.time() - pickup_start
                         while not bridge.to_ai.empty():
                             try:
                                 chunk = bridge.to_ai.get_nowait()
                                 chunk_rms = audioop.rms(chunk, 2)
-                                if elapsed >= 2.5 and chunk_rms > vad_threshold:
+                                if elapsed >= 1.5 and chunk_rms > 450:
                                     consecutive_voice_chunks += 1
                                     if consecutive_voice_chunks >= 2:
                                         print(f"[Gateway] 🔔 Recipient voice detected on line (RMS={chunk_rms})!")
@@ -1265,8 +1258,8 @@ async def run_gemini_bridge(
                         if pickup_detected:
                             break
 
-                        # 3. Proactive pickup fallback: after 18.0s of active call, engage proactive AI greeting!
-                        if elapsed >= 18.0:
+                        # 3. Proactive pickup fallback: after 8.0s of active call, engage proactive AI greeting!
+                        if elapsed >= 8.0:
                             print(f"[Gateway] 🔔 Outbound call active ({elapsed:.1f}s elapsed) — engaging proactive AI greeting!")
                             pickup_detected = True
                             break
@@ -1297,7 +1290,15 @@ async def run_gemini_bridge(
                             "such as 'Hello! Thanks for calling, how can I help you today?']"
                         )
                     is_initial_greeting_active = True
-                    await session.send_realtime_input(text=greeting_turn)
+                    await session.send_client_content(
+                        turns=types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(text=greeting_turn)
+                            ],
+                        ),
+                        turn_complete=True,
+                    )
                 except Exception as e:
                     is_initial_greeting_active = False
                     print(f"[Gateway Warning] Could not send initial greeting trigger: {e}")
@@ -1516,20 +1517,12 @@ async def run_gemini_bridge(
                                     })
 
                             # Extract synthesized audio
-                            audio_data = None
                             if server_content.model_turn:
                                 for part in server_content.model_turn.parts:
                                     if part.inline_data and part.inline_data.data:
-                                        audio_data = part.inline_data.data
-                                        break
-
-                            # If an interruption recently occurred, drop remaining stale audio from that turn
-                            if time.time() - bridge.last_interrupted_at < 0.2:
-                                audio_data = None
-
-                            if audio_data is not None:
-                                pcm16_hfp = resample_for_hfp(audio_data, bridge)
-                                bridge.push_playback_audio(pcm16_hfp)
+                                        if time.time() - bridge.last_interrupted_at >= 0.2:
+                                            pcm16_hfp = resample_for_hfp(part.inline_data.data, bridge)
+                                            bridge.push_playback_audio(pcm16_hfp)
 
                             # If turn completes, flush jitter buffer & finalize completed turns
                             if server_content.turn_complete:
@@ -1620,7 +1613,14 @@ async def run_gemini_bridge(
 
         try:
             if active_session:
-                await _run_session_pipeline(active_session)
+                try:
+                    await _run_session_pipeline(active_session)
+                except Exception as e:
+                    print(f"[Gateway] Pre-warmed session ended/failed ({e}). Connecting fresh Gemini Live session...")
+                    active_session = None
+                    if not stop_event.is_set():
+                        async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as fresh_session:
+                            await _run_session_pipeline(fresh_session)
             else:
                 if is_initial_connect:
                     print("Connecting to Gemini Live API...")
@@ -1634,7 +1634,7 @@ async def run_gemini_bridge(
             if not stop_event.is_set():
                 print(f"[Gemini Live] Session error: {type(e).__name__}: {e}")
 
-        # Check if cellular call is still active (via WinRT or Phone Link window)
+        # Check if cellular call is still active or Bluetooth bridge is still running
         try:
             pcm_active = PhoneCallManager.get_is_call_active()
         except Exception:
@@ -1646,10 +1646,13 @@ async def run_gemini_bridge(
         except Exception:
             pl_active = False
 
-        call_still_active = pcm_active or pl_active
+        bridge_active = bridge.is_healthy()
+
+        call_still_active = not stop_event.is_set() and (pcm_active or pl_active or bridge_active)
 
         if not stop_event.is_set() and call_still_active:
             print("\n[Gateway] Cellular call is still ongoing! Reconnecting to a fresh Gemini Live session in 0.5s...")
+            active_session = None
             await asyncio.sleep(0.5)
         else:
             break
