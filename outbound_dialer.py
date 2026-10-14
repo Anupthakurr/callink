@@ -435,9 +435,8 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                     is_transfer_btn = True
 
                                 if is_transfer_btn:
-                                    # Hard guard: If already clicked once, NEVER click again!
-                                    if _transfer_clicked or _audio_transferred_to_pc or (time.time() - _last_transfer_action_time < 20.0):
-                                        _audio_transferred_to_pc = True
+                                    # Hard guard: If already confirmed on PC, never click again!
+                                    if _audio_transferred_to_pc:
                                         return True
 
                                     # Check if the button is enabled (not mid-transition)
@@ -447,48 +446,43 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
                                     except Exception:
                                         pass
 
-                                    # Immediately set flags BEFORE invoking to prevent any re-entry
-                                    _transfer_clicked = True
-                                    _audio_transferred_to_pc = True
-                                    _last_transfer_action_time = time.time()
-
                                     print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}', Text='{all_text}'). Transferring to PC...")
+
+                                    # 1. Hardware mouse click directly to button center
                                     clicked = False
+                                    try:
+                                        rect = b.CurrentBoundingRectangle
+                                        bw = rect.right - rect.left
+                                        bh = rect.bottom - rect.top
+                                        if bw > 0 and bh > 0 and rect.left >= 0 and rect.top >= 0:
+                                            cx = rect.left + bw // 2
+                                            cy = rect.top + bh // 2
+                                            orig_pt = wintypes.POINT()
+                                            user32.GetCursorPos(ctypes.byref(orig_pt))
+                                            user32.SetCursorPos(cx, cy)
+                                            time.sleep(0.05)
+                                            user32.mouse_event(0x0002, 0, 0, 0, 0)
+                                            time.sleep(0.05)
+                                            user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                            time.sleep(0.05)
+                                            user32.SetCursorPos(orig_pt.x, orig_pt.y)
+                                            clicked = True
+                                            print(f"[Audio Router] Hardware mouse click dispatched to Transfer button at ({cx}, {cy}).")
+                                    except Exception as ex:
+                                        print(f"[Audio Router] Mouse click notice: {ex}")
+
+                                    # 2. Also invoke UI Automation pattern as secondary trigger
                                     try:
                                         pattern = b.GetCurrentPattern(UIA_InvokePatternId)
                                         if pattern:
                                             invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
                                             invoker.Invoke()
-                                            clicked = True
-                                            print("[Audio Router] Triggered 'Transfer to PC' via UI Automation Invoke.")
-                                    except Exception as ex:
-                                        print(f"[Audio Router] UI Automation invoke notice: {ex}")
+                                    except Exception:
+                                        pass
 
-                                    if not clicked:
-                                        try:
-                                            rect = b.CurrentBoundingRectangle
-                                            bw = rect.right - rect.left
-                                            bh = rect.bottom - rect.top
-                                            if bw > 0 and bh > 0 and rect.left >= 0 and rect.top >= 0:
-                                                cx = rect.left + bw // 2
-                                                cy = rect.top + bh // 2
-                                                orig_pt = wintypes.POINT()
-                                                user32.GetCursorPos(ctypes.byref(orig_pt))
-                                                user32.SetCursorPos(cx, cy)
-                                                time.sleep(0.05)
-                                                user32.mouse_event(0x0002, 0, 0, 0, 0)
-                                                time.sleep(0.05)
-                                                user32.mouse_event(0x0004, 0, 0, 0, 0)
-                                                time.sleep(0.05)
-                                                user32.SetCursorPos(orig_pt.x, orig_pt.y)
-                                                clicked = True
-                                                print(f"[Audio Router] Hardware mouse click dispatched to Transfer button at ({cx}, {cy}).")
-                                        except Exception as ex:
-                                            print(f"[Audio Router] Mouse click fallback notice: {ex}")
-
-                                    time.sleep(1.5)
-                                    print("[Audio Router] Call audio transferred to PC! Locked for this session.")
-                                    return True
+                                    _transfer_clicked = True
+                                    _last_transfer_action_time = time.time()
+                                    time.sleep(1.2)
                         except Exception:
                             pass
                 finally:
@@ -506,7 +500,7 @@ def ensure_call_transferred_to_pc(timeout: float = 60.0) -> bool:
 def is_phone_link_call_connected() -> bool:
     """
     Checks if Microsoft Phone Link currently displays an in-call session with
-    active duration timer (e.g. 00:01, 00:05), or in-call controls without 'Calling...' text,
+    active duration timer (e.g. 00:01, 00:05), or in-call banner/controls without 'Calling...' text,
     or title 'Call on PC'.
     Returns True if recipient has picked up/call is connected, False if ringing or idle.
     """
@@ -550,7 +544,36 @@ def is_phone_link_call_connected() -> bool:
                     if not el:
                         continue
 
-                    # Check for in-call buttons (End call button indicates call session exists)
+                    # Check text elements first: active banner or duration timer proves connected!
+                    texts = el.FindAll(TreeScope_Descendants, txt_cond)
+                    is_ringing = False
+                    has_timer = False
+                    has_incall_banner = False
+
+                    if texts:
+                        for i in range(texts.Length):
+                            t = texts.GetElement(i)
+                            name = (t.CurrentName or "").strip().lower()
+                            if any(c in name for c in ["calling", "dialing", "connecting"]):
+                                is_ringing = True
+                            if "call on pc" in name:
+                                return True
+                            if any(k in name for k in ["currently in a call", "in a call on", "on your mobile device"]):
+                                has_incall_banner = True
+                            # Look for active call duration timer (e.g. 0:01, 00:01, 01:01, 12:45)
+                            m = re.match(r"^\d{1,2}:\d{2}$", name)
+                            if m:
+                                parts = name.split(":")
+                                sec = int(parts[0]) * 60 + int(parts[1])
+                                if sec > 0:
+                                    has_timer = True
+
+                    if has_timer:
+                        return True
+                    if has_incall_banner and not is_ringing:
+                        return True
+
+                    # Check for in-call buttons
                     btns = el.FindAll(TreeScope_Descendants, btn_cond)
                     has_incall_btn = False
                     if btns:
@@ -561,33 +584,9 @@ def is_phone_link_call_connected() -> bool:
                             if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
                                 has_incall_btn = True
                                 break
-
-                    if not has_incall_btn:
-                        continue
-
-                    # In-call controls exist! Now check text elements to see if it is still ringing or answered
-                    texts = el.FindAll(TreeScope_Descendants, txt_cond)
-                    is_ringing = False
-                    has_timer = False
-
-                    if texts:
-                        for i in range(texts.Length):
-                            t = texts.GetElement(i)
-                            name = (t.CurrentName or "").strip().lower()
-                            if any(c in name for c in ["calling", "dialing", "connecting"]):
-                                is_ringing = True
-                            if "call on pc" in name:
+                            if any(k in bname for k in ["transfer to pc", "transfer to phone"]):
                                 return True
-                            # Look for active call duration timer (e.g. 0:01, 00:01, 01:31, 12:45)
-                            m = re.match(r"^\d{1,2}:\d{2}$", name)
-                            if m:
-                                parts = name.split(":")
-                                sec = int(parts[0]) * 60 + int(parts[1])
-                                if sec > 0:
-                                    has_timer = True
 
-                    if has_timer:
-                        return True
                     if has_incall_btn and not is_ringing:
                         return True
                 except Exception:
@@ -602,8 +601,8 @@ def is_phone_link_call_connected() -> bool:
 
 def is_phone_link_call_present() -> bool:
     """
-    Checks if Microsoft Phone Link currently displays an active call session window
-    (either dialing, ringing, or connected, indicated by call controls/End call button,
+    Checks if Microsoft Phone Link currently displays an active call session
+    (either dialing, ringing, or connected, indicated by call controls, in-call banner,
     or window titled 'Call on PC' / 'Call on mobile device').
     Returns True if an active cellular call session exists in Phone Link.
     """
@@ -630,18 +629,36 @@ def is_phone_link_call_present() -> bool:
         import comtypes.client
         from comtypes.gen.UIAutomationClient import (
             IUIAutomation, TreeScope_Descendants,
-            UIA_ButtonControlTypeId, UIA_ControlTypePropertyId
+            UIA_ButtonControlTypeId, UIA_TextControlTypeId, UIA_ControlTypePropertyId
         )
 
         co_ok = _safe_coinit()
         try:
             uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
             btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+            txt_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_TextControlTypeId)
             for hwnd in hwnds:
                 try:
                     el = uia.ElementFromHandle(hwnd)
                     if not el:
                         continue
+
+                    # Check text elements for active in-call banner or timer
+                    texts = el.FindAll(TreeScope_Descendants, txt_cond)
+                    if texts:
+                        for i in range(texts.Length):
+                            t = texts.GetElement(i)
+                            tname = (t.CurrentName or "").strip().lower()
+                            if any(k in tname for k in [
+                                "currently in a call", "in a call on", "on your mobile device",
+                                "call on pc", "call on mobile", "transfer to pc", "transfer to phone"
+                            ]):
+                                return True
+                            import re
+                            if re.match(r"^\d{1,2}:\d{2}$", tname):
+                                return True
+
+                    # Check buttons
                     btns = el.FindAll(TreeScope_Descendants, btn_cond)
                     if btns:
                         for i in range(btns.Length):
@@ -649,6 +666,8 @@ def is_phone_link_call_present() -> bool:
                             bid = (b.CurrentAutomationId or "").strip()
                             bname = (b.CurrentName or "").strip().lower()
                             if bid in ["MiniEndButton", "KeypadEndCallButton", "EndCallButton", "ButtonEndCall"] or "end call" in bname:
+                                return True
+                            if any(k in bname for k in ["transfer to pc", "transfer to phone", "to pc", "to phone"]):
                                 return True
                 except Exception:
                     pass

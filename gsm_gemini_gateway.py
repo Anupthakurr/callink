@@ -1712,7 +1712,7 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
             else:
                 inactive_count += 1
 
-            threshold = 25 if bridge.is_healthy() else 8
+            threshold = 30 if bridge.is_healthy() else 25
             if inactive_count >= threshold:
                 print("\nCellular call became inactive (call ended).")
                 stop_event.set()
