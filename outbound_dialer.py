@@ -143,7 +143,14 @@ def find_phone_link_window():
 
 
 def ensure_phone_link_visible():
-    """Ensures Microsoft Phone Link is opened and active on screen so in-call audio routing functions."""
+    """Ensures Microsoft Phone Link is running in the background without disturbing active calls."""
+    import psutil
+    try:
+        for p in psutil.process_iter(['name']):
+            if 'phone' in (p.info['name'] or '').lower():
+                return
+    except Exception:
+        pass
     import subprocess
     try:
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\Microsoft.YourPhone_8wekyb3d8bbwe!App"], shell=False)
@@ -157,6 +164,7 @@ def ensure_phone_link_visible():
 _transfer_lock = threading.Lock()
 _last_transfer_action_time = 0.0
 _audio_transferred_to_pc = False
+_transfer_clicked = False
 
 
 def is_call_transferred_to_pc() -> bool:
@@ -165,12 +173,19 @@ def is_call_transferred_to_pc() -> bool:
     return _audio_transferred_to_pc
 
 
+def is_transfer_clicked() -> bool:
+    """Returns True if an automated or manual transfer action was executed during this call."""
+    global _transfer_clicked
+    return _transfer_clicked
+
+
 def reset_transfer_state():
     """Resets audio transfer state tracking for a new cellular call."""
-    global _last_transfer_action_time, _audio_transferred_to_pc
+    global _last_transfer_action_time, _audio_transferred_to_pc, _transfer_clicked
     with _transfer_lock:
         _last_transfer_action_time = 0.0
         _audio_transferred_to_pc = False
+        _transfer_clicked = False
 
 
 def get_last_transfer_time() -> float:
@@ -180,19 +195,25 @@ def get_last_transfer_time() -> float:
 
 def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
     """
-    Monitors Phone Link during an active or outgoing cellular call and automatically clicks
-    'Transfer to PC' so call audio is routed to PC by default (switching the button to 'Send call to mobile device' or 'Transfer to phone').
-    If the button already shows 'Send call to mobile device' or 'Transfer to phone', it leaves it alone and reports success.
+    Monitors Phone Link during an active or outgoing cellular call and ensures
+    call audio is routed to PC (switching the button to 'Send call to mobile device' or 'Transfer to phone').
+    If the button already indicates PC routing ('Transfer to phone', 'Send call to mobile device'),
+    it marks success and NEVER clicks.
+    If 'Transfer to PC' is detected, it triggers the transfer at most ONCE per call to prevent
+    any toggle loops or fighting with the user/system.
     """
-    global _last_transfer_action_time, _audio_transferred_to_pc
+    global _last_transfer_action_time, _audio_transferred_to_pc, _transfer_clicked
 
-    # Prevent concurrent running transfer jobs or rapid re-triggering
+    # Prevent concurrent running transfer jobs
     if not _transfer_lock.acquire(blocking=False):
         return _audio_transferred_to_pc
 
     try:
         now = time.time()
-        if now - _last_transfer_action_time < 5.0 and _audio_transferred_to_pc:
+        # If already confirmed on PC or already clicked, no need to re-trigger
+        if _audio_transferred_to_pc:
+            return True
+        if _transfer_clicked and (now - _last_transfer_action_time < 8.0):
             return True
 
         import ctypes
@@ -277,118 +298,134 @@ def ensure_call_transferred_to_pc(timeout: float = 15.0) -> bool:
                 import comtypes.client
                 from comtypes.gen.UIAutomationClient import (
                     IUIAutomation, TreeScope_Descendants,
-                    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
-                    UIA_InvokePatternId, IUIAutomationInvokePattern
+                    UIA_ButtonControlTypeId, UIA_TextControlTypeId, UIA_ControlTypePropertyId,
+                    UIA_InvokePatternId, IUIAutomationInvokePattern,
+                    UIA_TogglePatternId, IUIAutomationTogglePattern
                 )
 
                 co_ok = _safe_coinit()
                 try:
                     uia = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=IUIAutomation)
                     btn_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId)
+                    txt_cond = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, UIA_TextControlTypeId)
 
-                    # STEP 1: Fast scan ALL candidate windows to see if call audio is ALREADY ON PC!
-                    # If any button says "Send call to mobile device" or "Transfer to phone", DO NOT TOUCH ANYTHING!
                     for hwnd in candidate_hwnds:
                         try:
                             el = uia.ElementFromHandle(hwnd)
                             if not el:
                                 continue
                             btns = el.FindAll(TreeScope_Descendants, btn_cond)
-                            if btns and btns.Length > 0:
-                                for i in range(btns.Length):
-                                    b = btns.GetElement(i)
-                                    bname = (b.CurrentName or "").strip().lower()
-                                    if any(k in bname for k in [
-                                        "send call to mobile", "transfer to phone", "transfer to mobile",
-                                        "send to mobile", "send to phone", "use phone"
-                                    ]):
-                                        print(f"[Audio Router] Call audio is already routed to PC (button: '{b.CurrentName}').")
-                                        _audio_transferred_to_pc = True
-                                        _last_transfer_action_time = time.time()
-                                        return True
-                        except Exception:
-                            pass
-
-                    # STEP 2: Find genuine "Transfer to PC" button in candidate windows
-                    for hwnd in candidate_hwnds:
-                        try:
-                            el = uia.ElementFromHandle(hwnd)
-                            if not el:
+                            if not btns or btns.Length == 0:
                                 continue
-                            btns = el.FindAll(TreeScope_Descendants, btn_cond)
-                            if btns and btns.Length > 0:
-                                for i in range(btns.Length):
-                                    b = btns.GetElement(i)
-                                    name = (b.CurrentName or "").strip()
-                                    aid = (b.CurrentAutomationId or "").strip()
-                                    name_l = name.lower()
-                                    aid_l = aid.lower()
 
-                                    # Reject buttons that end, mute, or manipulate dialpad
-                                    if any(f in name_l for f in ["end", "hang", "decline", "cancel", "mute", "mic", "keypad", "dialpad", "hold", "add", "swap", "dismiss", "close"]):
-                                        continue
+                            for i in range(btns.Length):
+                                b = btns.GetElement(i)
+                                name = (b.CurrentName or "").strip()
+                                aid = (b.CurrentAutomationId or "").strip()
+                                help_txt = (b.CurrentHelpText or "").strip()
+                                name_l = name.lower()
+                                aid_l = aid.lower()
+                                help_l = help_txt.lower()
 
-                                    # Reject any button indicating it's already on PC
-                                    if any(k in name_l for k in ["send call to mobile", "transfer to phone", "transfer to mobile", "send to mobile", "send to phone", "use phone"]):
-                                        print(f"[Audio Router] Call audio is already routed to PC (button: '{name}').")
+                                # Reject non-transfer buttons (end, mute, dialpad, etc.)
+                                if any(f in name_l for f in ["end", "hang", "decline", "cancel", "mute", "mic", "keypad", "dialpad", "hold", "add", "swap", "dismiss", "close"]):
+                                    continue
+                                if any(f in aid_l for f in ["end", "hang", "decline", "cancel", "mute", "mic", "keypad", "dialpad", "hold", "add", "swap", "dismiss", "close"]):
+                                    continue
+
+                                # Collect text from any inner child elements
+                                child_texts = []
+                                try:
+                                    child_els = b.FindAll(TreeScope_Descendants, txt_cond)
+                                    if child_els:
+                                        for c_i in range(child_els.Length):
+                                            c_name = (child_els.GetElement(c_i).CurrentName or "").strip().lower()
+                                            if c_name:
+                                                child_texts.append(c_name)
+                                except Exception:
+                                    pass
+
+                                all_text = " ".join([name_l, help_l] + child_texts).strip()
+
+                                # (A) ALREADY ON PC check:
+                                # "transfer to phone", "send call to mobile", "send to phone", "send to mobile", "use phone"
+                                is_on_pc = False
+                                if any(k in all_text for k in [
+                                    "send call to mobile", "transfer to phone", "transfer to mobile",
+                                    "send to mobile", "send to phone", "use phone", "mobile device",
+                                    "call on mobile", "phone call"
+                                ]):
+                                    is_on_pc = True
+
+                                # Check TogglePattern (ToggleState 1 = On = PC)
+                                if not is_on_pc:
+                                    try:
+                                        tog_p = b.GetCurrentPattern(UIA_TogglePatternId)
+                                        if tog_p:
+                                            tog = tog_p.QueryInterface(IUIAutomationTogglePattern)
+                                            if tog.CurrentToggleState == 1:
+                                                is_on_pc = True
+                                    except Exception:
+                                        pass
+
+                                if is_on_pc:
+                                    print(f"[Audio Router] Call audio is already routed to PC (button: '{name or aid}').")
+                                    _audio_transferred_to_pc = True
+                                    _last_transfer_action_time = time.time()
+                                    return True
+
+                                # (B) TRANSFER TO PC check:
+                                # MUST contain "pc" or "computer" AND MUST NOT contain "phone" or "mobile"
+                                is_transfer_btn = False
+                                if ("pc" in all_text or "computer" in all_text) and not any(m in all_text for m in ["phone", "mobile"]):
+                                    is_transfer_btn = True
+
+                                if is_transfer_btn:
+                                    # If already clicked once during this call, do not click again!
+                                    if _transfer_clicked:
                                         _audio_transferred_to_pc = True
-                                        _last_transfer_action_time = time.time()
                                         return True
 
-                                    is_transfer = False
-                                    if any(k in name_l for k in ["transfer to pc", "transfer to this pc", "use pc for calls", "transfer to computer"]):
-                                        is_transfer = True
-                                    elif "transfer" in name_l and "pc" in name_l:
-                                        is_transfer = True
-                                    elif name_l == "transfer":
-                                        is_transfer = True
-                                    elif aid in ["TransferButton", "ActiveCallBannerTransferButtonTarget", "SurpriseCallToastTransferButtonTarget", "TransferToPcButton"]:
-                                        is_transfer = True
-                                    elif "transfer" in aid_l and ("pc" in aid_l or "button" in aid_l):
-                                        is_transfer = True
+                                    print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Transferring to PC...")
+                                    clicked = False
+                                    try:
+                                        pattern = b.GetCurrentPattern(UIA_InvokePatternId)
+                                        if pattern:
+                                            invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
+                                            invoker.Invoke()
+                                            clicked = True
+                                            print("[Audio Router] Triggered 'Transfer to PC' via UI Automation Invoke.")
+                                    except Exception as ex:
+                                        print(f"[Audio Router] UI Automation invoke notice: {ex}")
 
-                                    if is_transfer:
-                                        print(f"[Audio Router] Detected 'Transfer to PC' button (Name='{name}', AutomationId='{aid}'). Transferring to PC...")
-                                        clicked = False
-                                        # Prefer UI Automation InvokePattern (clean, no mouse movement)
+                                    if not clicked:
                                         try:
-                                            pattern = b.GetCurrentPattern(UIA_InvokePatternId)
-                                            if pattern:
-                                                invoker = pattern.QueryInterface(IUIAutomationInvokePattern)
-                                                invoker.Invoke()
+                                            rect = b.CurrentBoundingRectangle
+                                            bw = rect.right - rect.left
+                                            bh = rect.bottom - rect.top
+                                            if bw > 0 and bh > 0 and rect.left >= 0 and rect.top >= 0:
+                                                cx = rect.left + bw // 2
+                                                cy = rect.top + bh // 2
+                                                orig_pt = wintypes.POINT()
+                                                user32.GetCursorPos(ctypes.byref(orig_pt))
+                                                user32.SetCursorPos(cx, cy)
+                                                time.sleep(0.05)
+                                                user32.mouse_event(0x0002, 0, 0, 0, 0)
+                                                time.sleep(0.05)
+                                                user32.mouse_event(0x0004, 0, 0, 0, 0)
+                                                time.sleep(0.05)
+                                                user32.SetCursorPos(orig_pt.x, orig_pt.y)
                                                 clicked = True
-                                                print("[Audio Router] Triggered 'Transfer to PC' via UI Automation Invoke.")
+                                                print(f"[Audio Router] Hardware mouse click dispatched to Transfer button at ({cx}, {cy}).")
                                         except Exception as ex:
-                                            print(f"[Audio Router] UI Automation invoke notice: {ex}")
+                                            print(f"[Audio Router] Mouse click fallback notice: {ex}")
 
-                                        # ONLY if InvokePattern failed, use single hardware mouse click
-                                        if not clicked:
-                                            try:
-                                                rect = b.CurrentBoundingRectangle
-                                                bw = rect.right - rect.left
-                                                bh = rect.bottom - rect.top
-                                                if bw > 0 and bh > 0 and rect.left >= 0 and rect.top >= 0:
-                                                    cx = rect.left + bw // 2
-                                                    cy = rect.top + bh // 2
-                                                    orig_pt = wintypes.POINT()
-                                                    user32.GetCursorPos(ctypes.byref(orig_pt))
-                                                    user32.SetCursorPos(cx, cy)
-                                                    time.sleep(0.05)
-                                                    user32.mouse_event(0x0002, 0, 0, 0, 0)
-                                                    time.sleep(0.05)
-                                                    user32.mouse_event(0x0004, 0, 0, 0, 0)
-                                                    time.sleep(0.05)
-                                                    user32.SetCursorPos(orig_pt.x, orig_pt.y)
-                                                    clicked = True
-                                                    print(f"[Audio Router] Hardware mouse click dispatched to Transfer button at ({cx}, {cy}).")
-                                            except Exception as ex:
-                                                print(f"[Audio Router] Mouse click fallback notice: {ex}")
-
-                                        _last_transfer_action_time = time.time()
-                                        _audio_transferred_to_pc = True
-                                        time.sleep(0.6)
-                                        print("[Audio Router] Call audio transferred to PC! Now showing 'Send call to mobile device'.")
-                                        return True
+                                    _transfer_clicked = True
+                                    _last_transfer_action_time = time.time()
+                                    _audio_transferred_to_pc = True
+                                    time.sleep(0.8)
+                                    print("[Audio Router] Call audio transferred to PC! Now showing 'Send call to mobile device'.")
+                                    return True
                         except Exception:
                             pass
                 finally:
@@ -641,7 +678,8 @@ def _auto_press_dial(phone_number: str):
                                         inv.Invoke()
                                         call_invoked = True
                                         print("[Outbound Dialer] Invoked ButtonCall directly via UIAutomation!")
-                                        user32.ShowWindow(hwnd, 6) # SW_MINIMIZE
+                                        # Keep Phone Link behind without suspending it (avoid SW_MINIMIZE which suspends Windows 11 UWP apps)
+                                        user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
                                         break
                 finally:
                     _safe_couninit(co_ok)
@@ -692,8 +730,8 @@ def _auto_press_dial(phone_number: str):
                 time.sleep(0.03)
                 user32.keybd_event(VK_RETURN, 0, 2, 0)
 
-                # Immediately minimize Phone Link back down
-                user32.ShowWindow(hwnd, 6) # SW_MINIMIZE
+                # Keep Phone Link behind without suspending it (avoid SW_MINIMIZE which suspends Windows 11 UWP apps)
+                user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
 
                 # Restore original cursor position and previous foreground window
                 time.sleep(0.03)

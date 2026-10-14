@@ -1226,7 +1226,7 @@ async def run_gemini_bridge(
                         elif bridge.total_input_frames == 0:
                             try:
                                 import outbound_dialer as dialer
-                                if not dialer.is_call_transferred_to_pc() and (now - dialer.get_last_transfer_time() > 10.0):
+                                if not dialer.is_call_transferred_to_pc() and not dialer.is_transfer_clicked() and (now - dialer.get_last_transfer_time() > 10.0):
                                     print("[Audio Link] ⚠️ Awaiting voice from phone (0 frames received — checking audio routing)...")
                                     dialer.trigger_transfer_to_pc_async(timeout=4.0)
                                 else:
@@ -1832,8 +1832,8 @@ async def main_async():
         dialer.reset_transfer_state()
         dialer.trigger_transfer_to_pc_async(timeout=15.0)
 
-        # Allow Windows Bluetooth SCO hardware link 350ms to settle
-        await asyncio.sleep(0.35)
+        # Allow Windows Bluetooth SCO hardware link 800ms to settle
+        await asyncio.sleep(0.8)
 
         # Re-resolve endpoints to capture freshly activated WASAPI or updated endpoints
         active_in, active_out = find_hfp_devices(quiet=True, force_refresh=True)
