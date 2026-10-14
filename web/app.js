@@ -996,8 +996,14 @@ function initStudioMode() {
   const startBtn = document.getElementById('btnStartBrowserCall');
   const endBtn = document.getElementById('btnEndBrowserCall');
 
-  startBtn?.addEventListener('click', startBrowserVoiceCall);
-  endBtn?.addEventListener('click', endBrowserVoiceCall);
+  startBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    startBrowserVoiceCall();
+  });
+  endBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    endBrowserVoiceCall();
+  });
 }
 
 async function startBrowserVoiceCall(customWsUrl = null) {
@@ -1024,12 +1030,14 @@ async function startBrowserVoiceCall(customWsUrl = null) {
 
     // 2. Connect WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = customWsUrl || `${protocol}//${window.location.host}/ws/browser_call`;
+    const isValidWs = typeof customWsUrl === 'string' && customWsUrl.startsWith('ws');
+    const wsUrl = isValidWs ? customWsUrl : `${protocol}//${window.location.host}/ws/browser_call`;
+    console.log('[Voice Studio] Connecting to:', wsUrl);
     const ws = new WebSocket(wsUrl);
     appState.studioWs = ws;
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       const isOutbound = wsUrl.includes('outbound=1');
       statusLabel.textContent = isOutbound
         ? 'Connected! AI is speaking first to initiate the call...'
@@ -1048,7 +1056,7 @@ async function startBrowserVoiceCall(customWsUrl = null) {
       }, 1000);
 
       // Start audio processing pipeline
-      setupStudioAudioPipeline(stream, ws);
+      await setupStudioAudioPipeline(stream, ws);
     };
 
     ws.onmessage = async (event) => {
@@ -1061,7 +1069,7 @@ async function startBrowserVoiceCall(customWsUrl = null) {
         } else if (msg.type === 'transcript') {
           appendStudioTranscript(msg.role, msg.text);
         } else if (msg.type === 'call_ended') {
-          teardownStudioSession();
+          teardownStudioSession('Call completed. Recording saved to library!');
           loadRecordings();
         } else if (msg.type === 'error') {
           alert('Studio error: ' + msg.message);
@@ -1073,8 +1081,14 @@ async function startBrowserVoiceCall(customWsUrl = null) {
       }
     };
 
-    ws.onclose = () => {
-      teardownStudioSession();
+    ws.onerror = (err) => {
+      console.error('[Voice Studio WS Error]:', err);
+      if (statusLabel) statusLabel.textContent = 'Voice Studio connection error. Is the gateway running?';
+    };
+
+    ws.onclose = (ev) => {
+      console.log('[Voice Studio WS Closed]:', ev.code, ev.reason);
+      teardownStudioSession(appState.studioSeconds > 0 ? 'Call completed. Recording saved to library!' : 'Voice call ended.');
     };
 
   } catch (err) {
@@ -1083,14 +1097,17 @@ async function startBrowserVoiceCall(customWsUrl = null) {
   }
 }
 
-function setupStudioAudioPipeline(stream, ws) {
+async function setupStudioAudioPipeline(stream, ws) {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   const ctx = new AudioCtx({ sampleRate: 16000 });
+  if (ctx.state === 'suspended') {
+    try { await ctx.resume(); } catch (e) {}
+  }
   appState.studioAudioContext = ctx;
 
   const source = ctx.createMediaStreamSource(stream);
   // ScriptProcessor to grab 16-bit PCM blocks
-  const processor = ctx.createScriptProcessor(512, 1, 1);
+  const processor = ctx.createScriptProcessor(1024, 1, 1);
   appState.studioProcessor = processor;
 
   processor.onaudioprocess = (e) => {
@@ -1118,6 +1135,9 @@ function playGeminiPcmChunk(arrayBuffer) {
   if (!studioPlaybackCtx) {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     studioPlaybackCtx = new AudioCtx({ sampleRate: 24000 });
+  }
+  if (studioPlaybackCtx.state === 'suspended') {
+    try { studioPlaybackCtx.resume(); } catch (e) {}
   }
 
   const int16Array = new Int16Array(arrayBuffer);
@@ -1222,7 +1242,7 @@ function endBrowserVoiceCall() {
   teardownStudioSession();
 }
 
-function teardownStudioSession() {
+function teardownStudioSession(customMessage) {
   appState.isStudioCalling = false;
   clearInterval(appState.studioTimerInterval);
 
@@ -1249,7 +1269,9 @@ function teardownStudioSession() {
   orb?.classList.remove('active');
   startBtn?.classList.remove('hidden');
   endBtn?.classList.add('hidden');
-  if (statusLabel) statusLabel.textContent = 'Call completed. Recording saved to library!';
+  if (statusLabel) {
+    statusLabel.textContent = customMessage || (appState.studioSeconds > 0 ? 'Call completed. Recording saved to library!' : 'Ready to begin conversation');
+  }
 }
 
 // ==========================================================================
