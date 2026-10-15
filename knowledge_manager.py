@@ -303,7 +303,7 @@ LANGUAGE_PROMPTS = {
 }
 
 
-def get_effective_system_instruction(base_instruction: Optional[str] = None, language: Optional[str] = "en") -> str:
+def get_effective_system_instruction(base_instruction: Optional[str] = None, language: Optional[str] = "hi") -> str:
     """
     Combines the AI Persona base instruction, language directive, and the active Business Knowledge Base.
     """
@@ -314,8 +314,8 @@ def get_effective_system_instruction(base_instruction: Optional[str] = None, lan
     )
     instruction = (base_instruction or "").strip() or default_base
 
-    lang_key = (language or "en").strip().lower()
-    lang_directive = LANGUAGE_PROMPTS.get(lang_key, LANGUAGE_PROMPTS.get("en", ""))
+    lang_key = (language or "hi").strip().lower()
+    lang_directive = LANGUAGE_PROMPTS.get(lang_key, LANGUAGE_PROMPTS.get("hi", ""))
     if lang_directive:
         instruction = f"{instruction}\n\n[PRIMARY LANGUAGE DIRECTIVE]\n{lang_directive}"
 

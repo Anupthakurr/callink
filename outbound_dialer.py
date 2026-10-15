@@ -207,7 +207,7 @@ def consume_active_outbound() -> Optional[Dict[str, Any]]:
         return info
 
 
-def build_outbound_proactive_prompt(outbound_info: Dict[str, Any]) -> str:
+def build_outbound_proactive_prompt(outbound_info: Dict[str, Any], language: str = "hi") -> str:
     """Constructs the initial directive instructing Gemini Live to speak first."""
     name = outbound_info.get("contact_name", "the customer")
     goal = outbound_info.get("call_goal", "follow up and assist with their inquiry")
@@ -216,13 +216,20 @@ def build_outbound_proactive_prompt(outbound_info: Dict[str, Any]) -> str:
 
     notes_section = f"\nLead Context / Prior Notes: {notes}" if notes else ""
 
+    lang_hint = ""
+    lang_clean = (language or "hi").strip().lower()
+    if lang_clean == "hi":
+        lang_hint = " Greet and speak primarily in natural, polite Hindi (हिंदी) (e.g., 'नमस्ते' / 'Hello' with their name)."
+    elif lang_clean == "mai":
+        lang_hint = " Greet and speak primarily in natural, polite Maithili (मैथिली)."
+
     return (
         f"[OUTBOUND CALL ENGAGEMENT DIRECTIVE]\n"
         f"You are placing an OUTBOUND telephonic phone call to {name} (Number: {phone}).\n"
         f"Primary Call Objective: {goal}.{notes_section}\n\n"
-        f"CRITICAL INSTRUCTION: The recipient has just answered the phone. YOU MUST SPEAK FIRST!\n"
+        f"CRITICAL INSTRUCTION: The recipient has just answered the phone. YOU MUST SPEAK FIRST!{lang_hint}\n"
         f"Deliver a warm, professional, and natural opening line (1-2 short sentences):\n"
-        f"1. Greet them politely by name (e.g., 'Hello {name}' or 'Hi there').\n"
+        f"1. Greet them politely by name.\n"
         f"2. Introduce yourself and your company clearly.\n"
         f"3. State the purpose of your call concisely and check if now is a convenient time to speak.\n"
         f"Speak with confidence and high energy suitable for an outbound representative."

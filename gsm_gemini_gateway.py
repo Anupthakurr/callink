@@ -1365,7 +1365,7 @@ async def run_gemini_bridge(
 
     settings = load_settings()
     voice_name = settings.get("voice_name", "Puck")
-    lang = settings.get("language", "en")
+    lang = settings.get("language", "hi")
     base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
     system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
     vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
@@ -1483,15 +1483,28 @@ async def run_gemini_bridge(
                 greeting_sent_time = time.time()
                 try:
                     if outbound_info:
-                        greeting_turn = dialer.build_outbound_proactive_prompt(outbound_info)
+                        greeting_turn = dialer.build_outbound_proactive_prompt(outbound_info, language=lang)
                         print(f"[Gateway] 🚀 Outbound call connected to {outbound_info.get('contact_name')}! Proactive opening prompt dispatched to Gemini Live.")
                     else:
                         print("[Gateway] Requesting immediate inbound AI greeting...")
-                        greeting_turn = (
-                            "[A caller has just connected to the phone call. "
-                            "Immediately greet them warmly and concisely in one short sentence, "
-                            "such as 'Hello! Thanks for calling, how can I help you today?']"
-                        )
+                        if lang == "hi":
+                            greeting_turn = (
+                                "[A caller has just connected to the phone call. "
+                                "Immediately greet them warmly and concisely in Hindi in one short sentence, "
+                                "such as 'नमस्ते! कॉल करने के लिए धन्यवाद, मैं आपकी क्या सहायता कर सकता हूँ?']"
+                            )
+                        elif lang == "mai":
+                            greeting_turn = (
+                                "[A caller has just connected to the phone call. "
+                                "Immediately greet them warmly and concisely in Maithili in one short sentence, "
+                                "such as 'प्रणाम! कॉल करय लेल धन्यवाद, हम अहाँक की मद्द कऽ सकैत छी?']"
+                            )
+                        else:
+                            greeting_turn = (
+                                "[A caller has just connected to the phone call. "
+                                "Immediately greet them warmly and concisely in one short sentence, "
+                                "such as 'Hello! Thanks for calling, how can I help you today?']"
+                            )
                     is_initial_greeting_active = True
                     await session.send_client_content(
                         turns=types.Content(
@@ -2071,7 +2084,7 @@ async def main_async():
                 if api_key:
                     curr_settings = load_settings()
                     v_name = curr_settings.get("voice_name", "Puck")
-                    lang = curr_settings.get("language", "en")
+                    lang = curr_settings.get("language", "hi")
                     base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
                     sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
                     live_cfg = types.LiveConnectConfig(
@@ -2124,7 +2137,7 @@ async def main_async():
             if api_key:
                 curr_settings = load_settings()
                 v_name = curr_settings.get("voice_name", "Puck")
-                lang = curr_settings.get("language", "en")
+                lang = curr_settings.get("language", "hi")
                 base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
                 sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
                 live_cfg = types.LiveConnectConfig(
