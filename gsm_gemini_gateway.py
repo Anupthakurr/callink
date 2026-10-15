@@ -426,20 +426,17 @@ def find_active_bthhfenum_endpoints(preferred_phone: str = ""):
 
 def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
     """Discovers Windows Bluetooth Hands-Free HF Audio input and output endpoints.
-    Prioritizes native Windows Core Audio (WASAPI) active endpoints from bthhfenum.sys,
-    guaranteeing zero driver IOCTL errors and rock-solid audio synchronization.
-    Falls back to PortAudio/sounddevice if no native BTHHFENUM endpoints are detected."""
+    Directly routes through native Windows WDM-KS PortAudio streams, guaranteeing
+    active bidirectional SCO packet delivery for both incoming caller audio and AI playback."""
     global _last_bth_phone_name
     preferred_phone = os.environ.get("PHONE_NAME", "").strip()
-    cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
-    if cap_id and ren_id:
-        _last_bth_phone_name = phone_name
-        if not quiet:
-            print(f"HFP INPUT  : WASAPI Endpoint ({phone_name}) [{cap_id}]")
-            print(f"HFP OUTPUT : WASAPI Endpoint ({phone_name}) [{ren_id}]")
-        return cap_id, ren_id
 
-    # Fallback to PortAudio/sounddevice
+    # 1. Query Windows registry to detect active connected phone name
+    _, _, active_phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
+    if active_phone_name:
+        _last_bth_phone_name = active_phone_name
+        if not preferred_phone:
+            preferred_phone = active_phone_name
 
     try:
         devices = sd.query_devices()
@@ -449,8 +446,8 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
             print(f"[Audio Error] Could not query audio devices: {e}")
         return None, None
 
-    # Host API preference ranking: WASAPI (most stable) > DirectSound > MME > WDM-KS
-    api_ranks = {"windows wasapi": 4, "windows directsound": 3, "mme": 2, "windows wdm-ks": 1}
+    # Host API preference ranking: Windows WDM-KS is the native kernel driver for bthhfenum.sys
+    api_ranks = {"windows wdm-ks": 10, "windows wasapi": 4, "windows directsound": 3, "mme": 2}
 
     def get_api_score(dev):
         hostapi_idx = dev.get("hostapi", -1)
@@ -472,13 +469,13 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
 
         score = 0
 
-        # 1. Configured or detected phone name preference
+        # 1. Connected phone name match
         if preferred_phone_low and preferred_phone_low in name:
             score += 50
 
         # 2. Prefer telephony endpoints created by Microsoft Phone Link (Hands-Free HF Audio)
         if "hands-free hf audio" in name:
-            score += 15
+            score += 25
         elif "hands-free" in name:
             score += 5
 
@@ -555,7 +552,7 @@ class HFPBridge:
         self.output_device = out_dev
 
         self.is_wasapi = isinstance(in_dev, str) and isinstance(out_dev, str) and in_dev.startswith("{")
-        self.phone_name = _last_bth_phone_name if self.is_wasapi else ""
+        self.phone_name = _last_bth_phone_name
         self._wasapi_running = False
         self._cap_thread = None
         self._ren_thread = None
@@ -584,7 +581,7 @@ class HFPBridge:
         """PortAudio fallback callback for standard audio devices."""
         try:
             pcm16 = indata[:, 0].tobytes()
-            self.total_input_frames += 1
+            self.total_input_frames += frames
             try:
                 self.to_ai.put_nowait(pcm16)
             except queue.Full:
@@ -1005,8 +1002,7 @@ class HFPBridge:
                 self.input_device = in_dev
                 self.output_device = out_dev
                 self.is_wasapi = isinstance(in_dev, str) and isinstance(out_dev, str) and in_dev.startswith("{")
-                if self.is_wasapi:
-                    self.phone_name = _last_bth_phone_name
+                self.phone_name = _last_bth_phone_name
 
             if self.input_device is None or self.output_device is None:
                 if attempt < max_retries:
@@ -1055,7 +1051,7 @@ class HFPBridge:
                     )
                     self.input_stream.start()
 
-                print("[Audio Link] HFP audio bridge running successfully.\n")
+                print(f"[Audio Link] PortAudio Bluetooth HFP audio bridge running successfully ({self.phone_name}).\n")
                 return True
             except Exception as e:
                 self.stop()
