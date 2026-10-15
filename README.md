@@ -1,244 +1,336 @@
-# Callink: GSM-to-Gemini Live AI Voice Gateway
+# Callink: GSM-to-Gemini Live AI Voice Gateway & Studio
 
-A real-time Windows voice gateway bridging cellular telephone calls (via an Android smartphone connected over Bluetooth Hands-Free Profile / HFP) directly to Google's **Gemini Live API** (`gemini-3.1-flash-live-preview`).
+<div align="center">
 
-AllowS an AI agent to hold real-time, low-latency, full-duplex spoken conversations with anyone calling your phone number over the standard cellular GSM network.
+![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows)
+![Python](https://img.shields.io/badge/Python-3.9%2B-brightgreen?style=for-the-badge&logo=python)
+![Model](https://img.shields.io/badge/AI%20Engine-Gemini%203.1%20Flash%20Live-orange?style=for-the-badge&logo=google)
+![Latency](https://img.shields.io/badge/Latency-~800ms%20Roundtrip-success?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-purple?style=for-the-badge)
 
----
+**A high-performance Windows telephony gateway bridging standard cellular telephone calls directly to Google's multimodal Gemini Live API (`gemini-3.1-flash-live-preview`) over Bluetooth Hands-Free Profile (HFP).**
 
-## Architecture Overview
+[Features](#-key-features) • [Architecture](#-architecture--telephony-pipeline) • [Latency Benchmark](#-latency-benchmark-callink-vs-legacy-telephony) • [Quickstart](#-quickstart-1-click-on-windows) • [Dashboard Overview](#-glassmorphic-web-dashboard) • [Troubleshooting](#-troubleshooting--audio-tuning)
 
-```
-                      +-------------------+
-                      |   Cellular GSM    |
-                      |   Caller / PSTN   |
-                      +---------+---------+
-                                |
-                                v (Cellular SIM)
-                      +-------------------+
-                      |   Android Phone   |
-                      +---------+---------+
-                                |
-                                | Bluetooth HFP (SCO Audio)
-                                v
-             +-------------------------------------+
-             |         Windows PC Gateway          |
-             |                                     |
-             |  1. PhoneCallManager (WinRT)        |
-             |     - Auto-detects active GSM calls |
-             |                                     |
-             |  2. HFP Audio Bridge (sounddevice)  |
-             |     - 16 kHz Mono PCM capture/play  |
-             |                                     |
-             |  3. VAD & Barge-In Engine           |
-             |     - Client-side RMS cutoff        |
-             |     - Server-side interruption sync |
-             |                                     |
-             |  4. Resampler (audioop)             |
-             |     - 24 kHz (Gemini) <-> 16 kHz    |
-             +------------------+------------------+
-                                |
-                                | WebSocket (Bidirectional PCM)
-                                v
-                  +---------------------------+
-                  |  Google Gemini Live API   |
-                  |  gemini-3.1-flash-live    |
-                  +---------------------------+
-```
+</div>
 
 ---
 
-## Latency Benchmark: Legacy Telephony Stack vs. Callink
+## 🌟 What is Callink?
 
-Callink was engineered to solve the prohibitive conversational latency inherent in traditional telephony architectures (Asterisk PBX + SIP trunks + Dograh middleware + cascaded STT/LLM/TTS pipelines). By moving to direct hardware Bluetooth HFP capture and Google's native multimodal Gemini Live WebSocket gateway, **turn-around latency dropped from ~3.5 – 4.5+ seconds down to ~800ms – 1.2 seconds (~70% to 75% reduction)**.
+**Callink** enables an AI agent to hold real-time, low-latency, full-duplex spoken conversations with anyone calling your phone number over the standard cellular GSM/PSTN network—or when you dispatch proactive outbound calls to customers.
 
-### Performance Comparison Matrix
+Unlike traditional telephony solutions that require expensive cloud SIP trunks, Asterisk PBX servers, and cascaded STT &rarr; LLM &rarr; TTS pipelines that suffer from 3–5 seconds of awkward conversational delay, **Callink bridges your physical smartphone's Bluetooth baseband audio directly to Google's native speech-to-speech Gemini Live WebSocket gateway on Windows**.
 
-| Pipeline Stage | Previous Architecture <br>*(Asterisk + Dograh + Cascaded Pipeline)* | Callink Architecture <br>*(Direct Bluetooth HFP + Gemini Live)* | Latency Eliminated |
+The result is a conversational turn-around latency of **~800ms to 1.2s**, complete with natural barge-in interruptions, multilingual code-switching, automated dual-track recording, and enterprise knowledge grounding.
+
+---
+
+## 🏛️ Architecture & Telephony Pipeline
+
+```text
+                      +-----------------------------+
+                      |   Standard Cellular Phone   |
+                      |     Caller / PSTN / GSM     |
+                      +--------------+--------------+
+                                     |
+                                     v (Cellular Carrier Network)
+                      +-----------------------------+
+                      |   Android Mobile Phone      |
+                      |   with "Link to Windows"    |
+                      +--------------+--------------+
+                                     |
+                                     | Bluetooth HFP / SCO Audio Link
+                                     | (16 kHz 16-Bit PCM Bidirectional)
+                                     v
+       +-------------------------------------------------------------+
+       |                  Windows PC Gateway Host                    |
+       |                                                             |
+       |  1. Windows Runtime Telephony Detector (WinRT)              |
+       |     - PhoneCallManager hooks cellular call state changes    |
+       |     - Zero polling overhead; instant pickup & hangup events |
+       |                                                             |
+       |  2. Bluetooth SCO Audio Bridge (sounddevice)                |
+       |     - Continuous 20ms frame streaming (320 samples @ 16kHz) |
+       |     - 120ms Dynamic SCO Jitter Buffer                       |
+       |                                                             |
+       |  3. Hardware-Calibrated VAD & Barge-In Engine               |
+       |     - Client-side RMS speech energy threshold               |
+       |     - Instant local playback queue flushing on interrupt   |
+       |                                                             |
+       |  4. In-Memory Resampler (audioop / scipy)                   |
+       |     - 16 kHz Bluetooth PCM <---> 24 kHz Gemini Live PCM     |
+       |                                                             |
+       |  5. Dual-Track Synchronized Call Recorder                   |
+       |     - Left Channel: Clean Caller Voice                      |
+       |     - Right Channel: Gemini AI Voice                        |
+       |                                                             |
+       |  6. Stay-Awake Guard (Win32 kernel32)                       |
+       |     - ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED             |
+       +-----------------------------+-------------------------------+
+                                     |
+                                     | Bidirectional Secure WebSocket
+                                     | (Raw Audio PCM Chunks)
+                                     v
+                      +-----------------------------+
+                      |   Google Gemini Live API    |
+                      |   gemini-3.1-flash-live     |
+                      +-----------------------------+
+```
+
+---
+
+## ⚡ Latency Benchmark: Callink vs. Legacy Telephony
+
+Callink was engineered from first principles to overcome the prohibitive conversational latency inherent in traditional telephony architectures (Asterisk PBX + Twilio/Telnyx SIP trunks + Dograh/LiveKit proxy + cascaded STT &rarr; LLM &rarr; TTS pipelines).
+
+### Performance Breakdown
+
+| Pipeline Stage | Legacy Architecture <br>*(Asterisk + SIP Trunk + STT/LLM/TTS)* | Callink Architecture <br>*(Direct Bluetooth HFP + Gemini Live)* | Latency Eliminated |
 | :--- | :--- | :--- | :--- |
-| **Call Capture & Ingestion** | **~250 – 400 ms** <br>GSM carrier &rarr; SIP Trunk &rarr; Asterisk PBX &rarr; RTP jitter buffer & transcoding (G.711 / Opus) | **~30 – 50 ms** <br>Direct GSM call on mobile &rarr; Bluetooth HFP (SCO link) hardware capture (16 kHz 16-bit PCM) | **~250 – 350 ms** |
-| **Telephony Gateway / Proxy** | **~150 – 250 ms** <br>Dograh proxy / webhook overhead, packet framing & forwarding | **0 ms** <br>Eliminated completely (Zero PBX / Zero SIP server) | **~150 – 250 ms** |
-| **Speech-to-Text (STT)** | **~400 – 700 ms** <br>External STT (Deepgram/Whisper) buffer chunking & text transcription | **0 ms** <br>Eliminated (Native audio-in multimodal representation) | **~400 – 700 ms** |
-| **LLM Reasoning & TTFT** | **~800 – 1,500 ms** <br>Prompt serialization &rarr; HTTP streaming request &rarr; LLM text generation (Time to First Token) | **~400 – 600 ms** <br>Direct multimodal token processing (native audio representation) | **~400 – 900 ms** |
-| **Text-to-Speech (TTS)** | **~450 – 800 ms** <br>External TTS (ElevenLabs / Cartesia) buffer synthesis wait time | **0 ms** <br>Eliminated (Model directly streams 24 kHz raw PCM audio chunks) | **~450 – 800 ms** |
-| **Turn Detection / VAD** | **~600 – 900 ms** <br>Client-side silence threshold wait before dispatching audio buffer to STT | **~350 – 500 ms** <br>Server-side continuous streaming VAD with continuous silence keep-alive | **~250 – 400 ms** |
-| **Return Audio Streaming** | **~200 – 300 ms** <br>TTS audio &rarr; Dograh &rarr; Asterisk RTP &rarr; SIP Trunk carrier | **~30 – 50 ms** <br>Gemini WebSocket chunk &rarr; Windows Bluetooth output queue | **~170 – 250 ms** |
+| **Call Capture & Ingestion** | **~250 – 400 ms** <br>GSM carrier &rarr; SIP Trunk &rarr; Asterisk PBX &rarr; RTP jitter buffer & transcoding | **~30 – 50 ms** <br>Physical GSM modem &rarr; Bluetooth HFP (SCO link) hardware capture (16 kHz 16-bit PCM) | **~250 – 350 ms** |
+| **Telephony Gateway / Proxy** | **~150 – 250 ms** <br>SIP proxy / Dograh webhook overhead, framing & packet forwarding | **0 ms** <br>Completely eliminated (Zero PBX / Zero SIP server) | **~150 – 250 ms** |
+| **Speech-to-Text (STT)** | **~400 – 700 ms** <br>Buffer chunk accumulation & text transcription (Whisper / Deepgram) | **0 ms** <br>Eliminated (Direct native audio-in multimodal tokens) | **~400 – 700 ms** |
+| **LLM Reasoning & TTFT** | **~800 – 1,500 ms** <br>Text prompt serialization & HTTP stream wait time | **~400 – 600 ms** <br>Native continuous token streaming | **~400 – 900 ms** |
+| **Text-to-Speech (TTS)** | **~450 – 800 ms** <br>External TTS buffer synthesis wait (ElevenLabs / Cartesia) | **0 ms** <br>Eliminated (Model directly streams 24 kHz raw PCM audio chunks) | **~450 – 800 ms** |
+| **Turn Detection / VAD** | **~600 – 900 ms** <br>Client-side silence threshold wait before dispatching audio to STT | **~350 – 500 ms** <br>Server-side continuous streaming semantic turn detection | **~250 – 400 ms** |
+| **Return Audio Streaming** | **~200 – 300 ms** <br>TTS audio &rarr; middleware &rarr; Asterisk RTP &rarr; SIP Trunk carrier | **~30 – 50 ms** <br>Gemini WebSocket chunk &rarr; Windows Bluetooth SCO output queue | **~170 – 250 ms** |
 | **TOTAL ROUND-TRIP LATENCY** | **~3,200 – 4,500+ ms (3.2 – 4.5s)** | **~800 – 1,200 ms (0.8 – 1.2s)** | **~2,400 – 3,300 ms saved (~70% to 75% drop)** |
 
-### Architectural Breakthroughs Driving the Reduction
+---
 
-1. **Elimination of Cascaded Pipeline Serialization:**
-   - In traditional stacks, each component acts as a serial bottleneck: audio must finish accumulating before STT can transcribe, STT must finish before LLM receives text, and LLM tokens must accumulate before TTS can synthesize audio.
-   - Callink uses native speech-to-speech multimodal streaming: raw audio in &rarr; direct raw audio out. STT and TTS are completely bypassed.
-2. **Elimination of SIP Trunk & Asterisk PBX Overhead:**
-   - Instead of routing through cloud SIP providers and PBX servers doing RTP packetization, jitter buffering, and G.711/Opus transcoding, Callink captures audio directly from the physical phone's baseband modem via Bluetooth HFP (SCO link) at 16 kHz PCM.
-3. **Continuous 20ms Frame Streaming & Instant Local Barge-In:**
-   - Unbroken 20ms audio frame streaming allows Gemini's semantic turn detector to predict speaker intent without waiting for large silence chunks.
-   - Local RMS-based hardware barge-in detects caller speech within 100ms and immediately flushes the pending audio playback buffer, eliminating cancellation round-trips.
+## ✨ Key Features
+
+### 1. 📞 Inbound & Outbound Cellular AI Telephony
+- **Automatic Inbound Detection:** Automatically answers incoming phone calls via Windows Runtime (`PhoneCallManager`) and starts the AI conversation without manual intervention.
+- **Outbound AI Call Dispatcher:** Dispatch proactive outbound calls directly from the web dashboard. Enter the recipient's phone number, name, and conversation goal—the AI dials via Windows Phone Link / Android dialer and speaks first with a tailored greeting!
+- **Call Pre-Warming:** Telephony listeners detect incoming rings and pre-initialize WebSocket connections to achieve zero-latency pickup.
+
+### 2. 🌐 Multilingual Auto-Detection & Code-Switching
+- **Dynamic Language Detection:** The AI automatically detects the caller's spoken language in real-time (Hindi, English, Spanish, French, German, Japanese, Hinglish, etc.) and naturally matches their language and dialect.
+- **Custom Default Language:** Set your business's default conversational language in the dashboard settings with seamless fallback adaptation.
+
+### 3. 🎨 Obsidian Glassmorphic Web Dashboard
+- **Futuristic Studio UI:** A sleek dark-mode glassmorphic dashboard (`http://localhost:5000`) built with multi-layer ambient lighting, frosted glass cards, and glowing telemetry nodes.
+- **Dual-Channel Live VU Meters:** Real-time LED audio level meters with decibel and RMS readouts for both the caller's microphone and Gemini AI's voice.
+- **Live Hardware Nodes:** Instant visual status for Windows Phone Link, Bluetooth HFP SCO bridge, Gemini Live API connection, and Windows Stay-Awake guard.
+- **Real-Time Auto-Scrolling Transcripts:** Watch speech bubbles appear live on screen as caller and AI converse.
+
+### 4. 🎙️ Dual-Track Call Recording & Master Web Player
+- **Studio-Grade Stereo WAVs:** Every call is automatically recorded to disk (`recordings/`) in synchronized 16 kHz 16-bit stereo WAV format:
+  - **Left Channel (L):** Isolated caller microphone.
+  - **Right Channel (R):** Isolated Gemini AI voice.
+- **Master Audio Player with Channel Isolation:** Built-in Web Audio API player allows you to toggle **Stereo (Dual)**, isolate **Caller Only**, isolate **AI Only**, or blend to **Mixed Mono** with playback speed control (0.75x – 2.0x).
+- **JSON Metadata & Transcripts:** Full timestamped JSON transcripts saved alongside every WAV recording.
+
+### 5. 🧠 Instant In-Browser Voice Studio
+- Talk directly to the Gemini Live AI voice agent in your browser using your PC's microphone and speakers.
+- Perfect for testing prompts, rehearsing outbound scripts, or testing document knowledge without dialing a phone number.
+
+### 6. 📚 Zero-Latency Business Knowledge Base Grounding
+- Upload business documents (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`) directly through the web UI.
+- Text is automatically extracted, tokenized, and injected straight into Gemini Live's system context.
+- Provides grounded, accurate answers on pricing, business policies, menus, and support questions with **zero vector database lookup latency**.
+
+### 7. 🛡️ Enterprise Hardware Resilience
+- **Anti-Cut Barge-In Engine:** Calibrated client-side RMS speech detection and immediate audio playback buffer purging allows callers to interrupt the AI naturally.
+- **Windows Stay-Awake Guard:** Integrated with Win32 `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`) to prevent PC/laptop sleep and keep Bluetooth and network links alive 24/7.
+- **120ms Dynamic SCO Jitter Buffer:** Absorbs Bluetooth packet jitter on Windows for smooth, glitch-free telephony playback.
 
 ---
 
-- **Outbound Cellular AI Calling & Proactive Dispatch:** Dial out directly to customers over the cellular GSM network via Windows Phone Link or Android ADB. When the customer answers, Gemini Live proactively speaks first with a customized greeting and purpose statement, addressing them by name and grounding answers in your uploaded business documents!
-- **Business Document Upload & Direct Grounding:** Upload enterprise documents (.pdf, .docx, .txt, .md, .csv, .json) directly through the web platform. The documents are injected straight into Gemini Live's active system instruction context for grounded, accurate answers on live phone calls without third-party vector databases.
-- **Multilingual Support with Default Language Selector:** Configure the assistant's default language (English, Hindi, Maithili, Spanish, French, German, Arabic, etc.) with real-time multilingual code-switching.
-- **Built-in Web Dashboard Platform:** Running Callink automatically opens an ultra-modern glassmorphic web dashboard (`http://localhost:5000`) for live monitoring, controlling settings, and reviewing conversations.
-- **Automated Dual-Track Call Recording:** Every telephone conversation is automatically recorded into studio-grade 16 kHz 16-bit stereo WAV files (`recordings/` folder):
-  - **Left Channel:** Clean caller voice from cellular Phone Link.
-  - **Right Channel:** AI assistant voice from Gemini Live.
-  - **Web Audio Channel Isolator:** Listen to Stereo, isolate Caller Only (Left), isolate AI Only (Right), or blend to Mixed Mono right in your browser!
-- **In-Browser Voice Studio:** Talk directly with the Gemini Live AI assistant inside the web browser using your laptop microphone and speakers to test prompts, simulate outbound calls, or record conversations without needing a phone!
-- **Conversation Transcripts & Metadata Library:** Real-time auto-scrolling conversation transcripts saved alongside each recording in JSON format with timestamps and event telemetry.
-- **Dynamic AI Persona & Voice Customizer:** Configure Gemini voice personas (Puck, Charon, Aoede, Fenrir, Kore) and customize system prompt scripts with pre-built business templates (Receptionist, Sales & Lead Qualifier, Appointment Scheduler, Support).
-- **Direct Gemini Live Connection:** Direct streaming using the official `google-genai` SDK without intermediate SIP servers, Asterisk, or third-party wrappers.
-- **Ultra-Low Latency:** Streams audio in 20ms blocks (320 samples @ 16 kHz) directly over WebSockets (~800ms roundtrip).
-- **Immediate Proactive Greeting:** Automatically greets the caller within ~1.3 seconds of call pickup via `session.send_client_content`, eliminating awkward dead air.
-- **Anti-Cut Barge-In Engine:** Calibrated client-side RMS VAD + server-side interruption synchronization for instantaneous natural conversational interruptions.
-- **Windows Sleep Prevention (Stay-Awake):** Native Win32 `SetThreadExecutionState` integration prevents your PC/laptop from entering sleep or turning off Bluetooth/network while waiting for calls or in active conversation.
-- **Automatic Call Lifecycle:** Automatically initiates the AI gateway when an incoming call starts and cleanly tears down sessions when the call hangs up using Windows Runtime (`PhoneCallManager`).
-- **1-Click Standalone Executable (.exe):** Package the gateway AND web platform into a single standalone `Callink.exe` file using `build_exe.bat`.
+## 💻 Hardware & System Requirements
+
+| Component | Minimum Specification | Recommended Specification |
+| :--- | :--- | :--- |
+| **Operating System** | Windows 10 (64-bit, build 19041+) | Windows 11 (64-bit, latest build) |
+| **Smartphone** | Android smartphone with active cellular SIM | Android 10+ with active SIM & Bluetooth 5.0+ |
+| **PC Bluetooth** | Bluetooth 4.2 adapter | Bluetooth 5.0+ USB dongle or internal card |
+| **Companion Software** | Microsoft **Phone Link** on PC <br>Microsoft **Link to Windows** on Android | Pre-installed on Windows 10/11 <br>Available free on Google Play Store |
+| **API Credentials** | Google Gemini API Key | High-quota key from [Google AI Studio](https://aistudio.google.com/) |
+
+> [!IMPORTANT]
+> Both devices must be paired through **Phone Link** with the **Calls** feature enabled. This activates the required `Hands-Free HF Audio` Bluetooth SCO endpoints in Windows Sound Settings and allows Windows `PhoneCallManager` to detect cellular telephone events.
 
 ---
 
-## Hardware & Operating System Requirements
+## 🚀 Quickstart (1-Click on Windows)
 
-- **OS:** Windows 10 or Windows 11 (build 19041+ recommended).
-- **Phone:** Android smartphone with an active cellular SIM card.
-- **Phone Link Apps (Required for Bluetooth Pairing & Call Audio):**
-  - **On Windows:** Microsoft **Phone Link** (pre-installed on Windows 10/11 or free on Microsoft Store).
-  - **On Android:** Microsoft **Link to Windows** (free on Google Play Store).
-  - Both devices must be paired through Phone Link via Bluetooth with the **Calls** feature enabled. This creates the required `Hands-Free HF Audio` SCO endpoints and enables Windows `PhoneCallManager` to detect incoming GSM cellular calls.
-- **Bluetooth:** PC Bluetooth adapter paired to the phone with Hands-Free Audio enabled.
+### Option 1: Standalone Single Executable (`Callink.exe`) — Zero Python Required!
+If you want to run Callink or share it with others who don't have Python installed:
+1. Double-click **`Callink.exe`** in the repository root (or download from Releases).
+2. On first launch, if your API key isn't configured, enter your `GEMINI_API_KEY` when prompted.
+3. The dashboard opens automatically at **`http://localhost:5000`**!
 
----
-
-## Quickstart (1-Click for Windows)
-
-The easiest way for you or a friend to run this on Windows:
-
-1. **Pair Phone & PC via Phone Link:**
-   - Open **Phone Link** on Windows and **Link to Windows** on your Android phone.
-   - Pair via Bluetooth and complete the setup for **Calls** (make and receive calls on PC).
-2. **Download or clone this folder** onto the PC.
-3. **Double-click `run.bat`**:
-   - Automatically checks for Python.
-   - Automatically prompts for your `GEMINI_API_KEY` on first launch (if `.env` is missing) and creates `.env`.
-   - Automatically creates an isolated virtual environment (`venv`) and installs dependencies.
-   - Automatically launches the gateway!
+### Option 2: 1-Click Batch Runner (`run.bat`)
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/Anupthakurr/callink.git
+   cd callink
+   ```
+2. Double-click **`run.bat`**:
+   - Automatically detects Python 3.9+.
+   - Prompts for your `GEMINI_API_KEY` on first launch and writes `.env`.
+   - Creates a clean isolated virtual environment (`venv`) and installs dependencies.
+   - Launches the gateway and web dashboard.
 
 ---
 
-## Manual Setup
+## 🛠️ Manual Installation & Developer Setup
 
-### 1. Clone the Repository
+### 1. Clone & Setup Virtual Environment
 ```bash
 git clone https://github.com/Anupthakurr/callink.git
 cd callink
+
+python -m venv venv
+# On Windows PowerShell:
+.\venv\Scripts\Activate.ps1
+# On Windows CMD:
+venv\Scripts\activate.bat
 ```
 
-### 2. Set Up Python Environment
-Python 3.9+ is supported:
+### 2. Install Dependencies
 ```bash
-python -m venv venv
-venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure Gemini API Key
-Create a `.env` file in the root directory (or use `.env.example` as a template):
+### 3. Configure Environment Variables
+Copy `.env.example` to `.env`:
 ```bash
 copy .env.example .env
 ```
-Add your Google Gemini API key:
+Add your Gemini API key:
 ```env
-GEMINI_API_KEY=your_actual_api_key_here
+GEMINI_API_KEY=your_actual_gemini_api_key_here
 ```
 
-### 4. Pair Your Smartphone via Phone Link
-1. **On your Windows PC:** Open **Phone Link** (download from Microsoft Store if not pre-installed).
-2. **On your Android phone:** Install and launch **Link to Windows** from Google Play Store.
-3. **Pair via Bluetooth:** Follow the on-screen pairing guide (scan the QR code or sign into your Microsoft account).
-4. **Enable Call Permissions:** When prompted in Phone Link, set up the **Calls** feature and grant Bluetooth pairing and call log permissions on Android.
-5. **Verify Audio Profile:** Ensure the device appears with **Hands-Free HF Audio** playback and recording endpoints in Windows sound settings.
+### 4. Pair Your Android Phone with Windows Phone Link
+1. On your Windows PC, open **Phone Link**.
+2. On your Android phone, install and open **Link to Windows**.
+3. Follow the on-screen instructions to pair via Bluetooth.
+4. In Phone Link, click **Calls** in the sidebar, click **Get Started**, and grant call permissions on your phone.
+5. In Windows Sound Settings, verify that **Hands-Free HF Audio** appears under Input and Output devices.
 
----
-
-## Running the Gateway
-
-Start the gateway:
+### 5. Launch the Gateway
 ```bash
 python gsm_gemini_gateway.py
 ```
-*(Or simply double-click `run.bat`)*
-
-### Execution Flow:
-1. Discovers the Bluetooth `Hands-Free HF Audio` input and output endpoints.
-2. Enables Windows Stay-Awake mode (`SetThreadExecutionState`), displays the startup banner, and waits in standby:
-   ```text
-   Waiting for smartphone cellular call...
-   ```
-3. When someone calls your phone:
-   - Cellular call is detected automatically via `PhoneCallManager`.
-   - HFP audio bridge starts and Gemini Live connects.
-   - AI immediately welcomes the caller (~1.3s proactive greeting).
-   - Real-time bidirectional voice conversation begins with robust barge-in support.
-4. When the call ends:
-   - Session tears down cleanly with zero zombie processes.
-   - Automatically returns to standby waiting for the next call.
+Open **`http://localhost:5000`** in your browser.
 
 ---
 
-## Packaging for Distribution
+## 🖥️ Glassmorphic Web Dashboard
 
-Want to share Callink with a friend? Choose the option that fits best:
+The web dashboard is organized into 5 dedicated studio suites:
 
-### Option 1: 1-Click Batch Runner (Recommended if Python is installed)
-- Share the repository folder (or a `.zip` without `venv` and `.env`).
-- Your friend simply double-clicks **`run.bat`**.
-- It checks Python, prompts for their `GEMINI_API_KEY` on first launch, builds the virtual environment, and starts Callink automatically.
+```
++-----------------------------------------------------------------------------------------+
+| [📞 Callink LIVE AI]  (STANDBY - WAITING)  (Bluetooth HFP: Connected)  [Quit Gateway]    |
+| [ ~ Live Gateway ] [ 🎙️ Voice Studio ] [ ⏯️ Recordings (18) ] [ 📄 Knowledge (1) ] [ ⚙️ AI Persona ] |
++-----------------------------------------------------------------------------------------+
+```
 
-### Option 2: Standalone Single Executable File (`Callink.exe`) (Zero Dependencies)
-If your friend does not have Python installed and you just want to send them **one single file**:
-1. On your PC, double-click **`build_exe.bat`** (or run `pip install pyinstaller && build_exe.bat`).
-2. This compiles everything into a single standalone file: **`dist\Callink.exe`**.
-3. Send **`Callink.exe`** directly to your friend (via Google Drive, Telegram, USB, etc.).
-4. Your friend simply double-clicks **`Callink.exe`**:
-   - Zero installation or Python required.
-   - If they haven't set up an API key, the console will prompt them on first launch to enter their `GEMINI_API_KEY` and save it automatically for all future runs!
+1. **Live Gateway (`#paneTelemetry`)**:
+   - **Outbound AI Call Dispatcher:** Enter phone number, recipient name, select one of the quick goal chips (🎯 Sales Follow-Up, 📅 Appointment Reminder, ⭐ VIP Lead Check-In, 📦 Order & Delivery), or type a custom goal.
+   - **Dual-Channel VU Meters:** Live audio activity bars with RMS meter metrics.
+   - **Hardware Connectivity:** Telephony status, Bluetooth HFP bridge, Gemini Live connection, and Stay-Awake status.
+   - **Live Conversation Stream:** Real-time speech bubbles and event timestamps.
 
----
+2. **Voice Studio (`#paneStudio`)**:
+   - Test conversational interactions directly using your computer's mic and speaker.
+   - Features animated pulsating audio orb, real-time waveform, and session recording.
 
-## Troubleshooting & Tips
+3. **Recordings Library (`#paneRecordings`)**:
+   - Master Audio Player with interactive audio scrubber, playback speed selector, and instant download.
+   - **Channel Isolation:** Listen to `Stereo (Dual)`, `Caller Only (L)`, `AI Only (R)`, or `Mixed Mono`.
+   - Complete history of all calls with metadata and synchronized transcripts.
 
-### 1. Bluetooth HFP Device Not Found
-- Ensure Microsoft **Phone Link** on PC and **Link to Windows** on Android are paired and connected.
-- In your phone's Bluetooth settings (tap the gear icon next to your PC's name), ensure **Phone calls** is toggled ON.
-- In Windows Device Manager, ensure the Bluetooth Hands-Free Audio driver (`bthhfenum.sys`) is active and not disabled.
+4. **Knowledge Base (`#paneKnowledge`)**:
+   - Drag-and-drop document upload area.
+   - Active document cards with extracted word counts and token estimations.
+   - **Inspect Injected Prompt:** Preview the exact grounding prompt injected into Gemini Live.
 
-### 2. Calls Not Triggering the Gateway
-- Callink uses Windows Runtime (`PhoneCallManager`) to monitor active cellular states.
-- Ensure the **Calls** feature in the Windows **Phone Link** app is set up and permitted.
-- The phone must be actively engaged in a cellular telephone call (PSTN/GSM), not an app-specific VoIP call (e.g. WhatsApp) unless routed through HFP.
-
-### 3. Laptop Sleep & Screen Lock
-- Callink automatically calls `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`) to prevent Windows from putting the CPU or Bluetooth adapter to sleep while listening for or handling calls.
-
-### 4. Barge-In & Voice Cut-Off Calibration
-- Default barge-in is calibrated for mobile cellular networks:
-  - `VAD_RMS_THRESHOLD = 3600` (avoids cutting off on breathing or earpiece acoustics)
-  - `VAD_CONSECUTIVE_FRAMES = 5` (~100ms continuous speech)
-  - `VAD_SPEECH_START_GRACE_PERIOD = 0.35` (350ms grace window after AI starts speaking)
-- If your friend's microphone input volume is unusually quiet or loud, adjust `VAD_RMS_THRESHOLD` in `gsm_gemini_gateway.py` or through the Windows sound input device volume slider.
+5. **AI Persona & Settings (`#paneSettings`)**:
+   - **Voice Persona Selector:** Choose between `Puck`, `Charon`, `Aoede`, `Fenrir`, or `Kore`.
+   - **Default Language:** Auto-detect or lock to a specific language (Hindi, English, etc.).
+   - **System Instruction Templates:** One-click pre-built templates for Receptionist, Sales, Support, and Scheduling.
+   - **Barge-In Calibration:** Adjust VAD RMS threshold and speech start grace period.
 
 ---
 
-## Testing & Verification Utilities
+## 📦 Building Standalone `Callink.exe`
 
-- **`test_gemini_live_standalone.py`**: Standalone audio pipeline test that sends a sample audio file (`sample.wav`) to Gemini Live, measures response latency, and verifies synthesis playback.
-- **`check_env.py`**: Validates the Python environment, dependencies, and API credentials.
+To package the entire Python runtime, dependencies, and web platform into a single distributable Windows `.exe`:
+
+```bash
+# Run the automated build script:
+build_exe.bat
+```
+*Or manually with PyInstaller:*
+```bash
+pyinstaller --noconfirm Callink.spec
+```
+
+The resulting binary will be generated in `dist\Callink.exe`. It can be run on any 64-bit Windows 10/11 PC with zero prerequisites.
 
 ---
 
-## License
+## 🔧 Troubleshooting & Audio Tuning
 
-MIT License.
+### 1. "Bluetooth Hands-Free device not found"
+- Ensure your phone is paired in Windows **Phone Link** and that the **Calls** feature is active.
+- On Android, go to **Settings &rarr; Bluetooth &rarr; Your PC**, tap the gear icon, and ensure **Phone calls** is toggled ON.
+- Ensure the Bluetooth Hands-Free Audio driver (`bthhfenum.sys`) is active and not disabled in Device Manager.
 
+### 2. Audio Echo or Beeping on Laptop Speakers
+- During phone calls, audio is routed bidirectionally between your phone's cellular baseband modem and your PC's Bluetooth Hands-Free device (`Hands-Free HF Audio`).
+- If you want to listen to live calls without disturbing the caller, use headphones or adjust device volume in Windows Sound Settings to prevent acoustic feedback loop into the microphone.
+
+### 3. Tuning Conversational Barge-In
+If callers report that the AI stops speaking too easily or fails to stop when interrupted:
+- Open the dashboard at `http://localhost:5000` &rarr; **AI Persona** tab.
+- **VAD RMS Threshold:**
+  - Increase (e.g. `3800 – 4200`) if background noise or breath causes accidental interruptions.
+  - Decrease (e.g. `2400 – 3000`) if the caller has a quiet voice or weak cellular signal.
+- **Barge-In Grace Period:**
+  - Increase (e.g. `0.45s`) to give the AI a brief window to start speaking before interruptions can trigger.
+
+### 4. Preventing Windows Sleep During Standby
+Callink automatically invokes `SetThreadExecutionState` on startup to keep the PC active while waiting for cellular calls. If using a laptop on battery, ensure Windows Power & Battery settings allow background network activity when the lid is closed.
+
+---
+
+## 📁 Repository Structure
+
+```text
+callink/
+├── gsm_gemini_gateway.py        # Core telephony engine, WinRT call detector & Gemini Live bridge
+├── web_server.py                # Aiohttp server, WebSocket gateway & API routes
+├── outbound_dialer.py           # Outbound cellular dialing via Phone Link & ADB
+├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
+├── knowledge_manager.py         # Document parser (.pdf, .docx, .txt) & prompt injector
+├── settings.json                # Persisted user configuration & AI persona settings
+├── build_exe.bat                # 1-Click PyInstaller compilation script
+├── Callink.spec                 # PyInstaller specification for standalone binary
+├── run.bat                      # 1-Click Windows launcher and auto-setup
+├── requirements.txt             # Python package dependencies
+├── web/                         # Modern Obsidian Glassmorphic Web Dashboard
+│   ├── index.html               # Main dashboard layout
+│   ├── styles.css               # Obsidian Glassmorphic 2.0 design system
+│   └── app.js                  # Frontend WebSocket client, Web Audio player & UI logic
+├── recordings/                  # Automated dual-track stereo WAV call recordings
+└── knowledge/                   # Uploaded enterprise grounding documents
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+
+---
+
+<div align="center">
+<b>Callink</b> • Built for ultra-low latency real-time voice AI on standard cellular networks.
+</div>
