@@ -257,20 +257,35 @@ The web dashboard is organized into 5 dedicated studio suites:
    - Features animated pulsating audio orb, real-time waveform, and session recording.
 
 3. **Recordings Library (`#paneRecordings`)**:
-   - Master Audio Player with interactive audio scrubber, playback speed selector, and instant download.
-   - **Channel Isolation:** Listen to `Stereo (Dual)`, `Caller Only (L)`, `AI Only (R)`, or `Mixed Mono`.
-   - Complete history of all calls with metadata and synchronized transcripts.
+   - **Master Audio Player:** Interactive scrub slider, playback speed controls (0.75x - 2.0x), and WAV downloads.
+   - **Hardware Channel Isolation:** Listen to `Stereo (Dual)`, `Caller Only (L)`, `AI Only (R)`, or `Mixed Mono`.
+   - Complete history of all calls with metadata cards and synchronized JSON transcripts.
+
+<p align="center">
+  <img src="assets/dashboard_recordings_player.png" alt="Callink Recordings Library & Master Audio Player" width="100%" />
+  <br><em>Figure 3: Synchronized Stereo WAV Recordings Player with Web Audio Channel Isolation (Left / Right / Mono)</em>
+</p>
 
 4. **Knowledge Base (`#paneKnowledge`)**:
-   - Drag-and-drop document upload area.
-   - Active document cards with extracted word counts and token estimations.
-   - **Inspect Injected Prompt:** Preview the exact grounding prompt injected into Gemini Live.
+   - Drag-and-drop document upload area supporting PDF, DOCX, TXT, Markdown, CSV, and JSON up to 20MB.
+   - Real-time token context calculation and in-memory injection into Gemini Live system prompt.
+   - **Inspect Injected Prompt:** Preview the exact grounding prompt injected into active sessions.
+
+<p align="center">
+  <img src="assets/dashboard_knowledge_base.png" alt="Callink Business Knowledge Base & Grounding" width="100%" />
+  <br><em>Figure 4: Enterprise Document Grounding with Zero-Latency In-Memory Context Injection</em>
+</p>
 
 5. **AI Persona & Settings (`#paneSettings`)**:
    - **Voice Persona Selector:** Choose between `Puck`, `Charon`, `Aoede`, `Fenrir`, or `Kore`.
-   - **Default Language:** Auto-detect or lock to a specific language (Hindi, English, etc.).
+   - **Default Language:** Auto-detect caller dialect or configure fixed defaults (Hindi, English, Spanish, etc.).
    - **System Instruction Templates:** One-click pre-built templates for Receptionist, Sales, Support, and Scheduling.
-   - **Barge-In Calibration:** Adjust VAD RMS threshold and speech start grace period.
+   - **Barge-In Calibration:** Fine-tune VAD RMS threshold and speech start grace period.
+
+<p align="center">
+  <img src="assets/dashboard_ai_persona.png" alt="Callink AI Persona, Voice & Default Language Settings" width="100%" />
+  <br><em>Figure 5: Gemini Live Voice Persona, Hindi/Multilingual Defaults & System Instruction Templates</em>
+</p>
 
 ---
 
