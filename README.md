@@ -12,7 +12,12 @@
 
 [Features](#-key-features) • [Architecture](#-architecture--telephony-pipeline) • [Latency Benchmark](#-latency-benchmark-callink-vs-legacy-telephony) • [Quickstart](#-quickstart-1-click-on-windows) • [Dashboard Overview](#-glassmorphic-web-dashboard) • [Troubleshooting](#-troubleshooting--audio-tuning)
 
+<br><br>
+
+<img src="assets/dashboard_outbound_dialer.png" alt="Callink Obsidian Glassmorphic Dashboard Preview" width="100%" />
+
 </div>
+
 
 ---
 
@@ -221,6 +226,16 @@ Open **`http://localhost:5000`** in your browser.
 ---
 
 ## 🖥️ Glassmorphic Web Dashboard
+
+<p align="center">
+  <img src="assets/dashboard_outbound_dialer.png" alt="Callink Outbound AI Call Dispatcher" width="100%" />
+  <br><em>Figure 1: Proactive Outbound AI Call Dispatcher with Quick Purpose Presets & Contact Context</em>
+</p>
+
+<p align="center">
+  <img src="assets/dashboard_telemetry_meters.png" alt="Callink Dual-Channel VU Meters and Hardware Connectivity Nodes" width="100%" />
+  <br><em>Figure 2: Real-Time Dual-Channel VU Audio Meters (Caller vs. AI) & WinRT Hardware Connectivity Nodes</em>
+</p>
 
 The web dashboard is organized into 5 dedicated studio suites:
 
