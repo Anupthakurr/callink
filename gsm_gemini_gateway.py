@@ -1224,7 +1224,11 @@ class HFPBridge:
             except Exception as e:
                 self.stop()
                 if attempt < max_retries:
-                    print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}: {e}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
+                    err_str = str(e)
+                    if "WdmSyncIoctl" in err_str or "PaErrorCode -9999" in err_str:
+                        print(f"[Audio Link] ⏳ Synchronizing Bluetooth SCO voice link with phone ({attempt}/{max_retries})...")
+                    else:
+                        print(f"[Audio Link] Bluetooth SCO hardware link negotiating ({type(e).__name__}: {e}). Retrying ({attempt}/{max_retries}) in {retry_delay}s...")
                     time.sleep(retry_delay)
                 else:
                     if is_outbound:
