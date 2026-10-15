@@ -135,7 +135,8 @@ def ensure_single_instance():
     except Exception:
         return True
 
-ensure_single_instance()
+if __name__ == '__main__':
+    ensure_single_instance()
 
 # Load .env if present
 try:
@@ -760,16 +761,16 @@ class HFPBridge:
                 except Exception as ex:
                     # Device state transition (e.g. transfer to PC / SCO connect)
                     if self._wasapi_running:
-                        time.sleep(0.25)
+                        time.sleep(0.05)
                 finally:
                     if client:
                         try:
                             client.Stop()
                         except Exception:
                             pass
-                    # Brief pause before re-init to let Bluetooth SCO settle
+                    # Immediate re-init without stalling Bluetooth SCO watchdog
                     if self._wasapi_running:
-                        time.sleep(0.5)
+                        time.sleep(0.05)
         finally:
             comtypes.CoUninitialize()
 
@@ -795,11 +796,22 @@ class HFPBridge:
                     wfx.cbSize = 0
 
                     flags = 0x80000000 | 0x08000000  # AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
-                    client.Initialize(0, flags, 1000000, 0, ctypes.byref(wfx), None)
+                    # 500ms buffer (5000000 hns) to provide substantial cushion for Bluetooth SCO hardware packets
+                    client.Initialize(0, flags, 5000000, 0, ctypes.byref(wfx), None)
                     buf_size = client.GetBufferSize()
 
                     p_rend = client.GetService(ctypes.byref(IID_IAudioRenderClient))
                     render = p_rend.QueryInterface(IAudioRenderClient)
+
+                    # Pre-roll the entire buffer with digital silence before Start().
+                    # This ensures that upon SCO connection, Bluetooth hardware immediately transmits packets,
+                    # satisfying Android's 3.0s watchdog timer and preventing call handover dropouts!
+                    try:
+                        p_buf = render.GetBuffer(buf_size)
+                        ctypes.memset(p_buf, 0, buf_size * 2)
+                        render.ReleaseBuffer(buf_size, 0)
+                    except Exception:
+                        pass
 
                     client.Start()
 
@@ -812,12 +824,12 @@ class HFPBridge:
                             consecutive_errs += 1
                             if consecutive_errs > 8:
                                 break
-                            time.sleep(0.02)
+                            time.sleep(0.01)
                             continue
 
                         available = buf_size - padding
                         if available >= 320:  # 20ms frame blocks @ 16kHz
-                            frames_to_write = 320
+                            frames_to_write = min(available, 1600)
                             bytes_needed = frames_to_write * 2
                             raw_chunk = b""
 
@@ -875,13 +887,16 @@ class HFPBridge:
                 except Exception as ex:
                     # Device state transition (e.g. transfer to PC / SCO connect)
                     if self._wasapi_running:
-                        time.sleep(0.25)
+                        time.sleep(0.05)
                 finally:
                     if client:
                         try:
                             client.Stop()
                         except Exception:
                             pass
+                    # Immediate re-init without stalling Bluetooth SCO watchdog
+                    if self._wasapi_running:
+                        time.sleep(0.05)
         finally:
             comtypes.CoUninitialize()
 

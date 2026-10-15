@@ -185,19 +185,17 @@ def find_phone_link_window():
 
 
 def ensure_phone_link_visible():
-    """Ensures Microsoft Phone Link is opened and active on screen so in-call controls and popup appear."""
+    """Ensures Microsoft Phone Link is opened and active on screen without jarring Z-order changes."""
     import ctypes
     user32 = ctypes.windll.user32
     h = find_phone_link_window()
-    if h and user32.IsWindowVisible(h):
-        user32.ShowWindow(h, 9)  # SW_RESTORE
+    if h:
         try:
+            user32.ShowWindow(h, 9)  # SW_RESTORE
             user32.SetForegroundWindow(h)
-            user32.SetWindowPos(h, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)  # HWND_TOPMOST, SWP_SHOWWINDOW
-            user32.SetWindowPos(h, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)  # HWND_NOTOPMOST
+            return
         except Exception:
             pass
-        return
 
     import subprocess
     try:
@@ -597,11 +595,9 @@ def _auto_press_dial(phone_number: str):
 
 
 
-                # Restore original cursor position and previous foreground window
+                # Restore original cursor position (keep Phone Link in foreground)
                 time.sleep(0.03)
                 user32.SetCursorPos(orig_pt.x, orig_pt.y)
-                if orig_fg and orig_fg != hwnd:
-                    user32.SetForegroundWindow(orig_fg)
 
                 clicked_count += 1
                 print(f"[Outbound Dialer] Dispatched Call trigger at ({click_x}, {click_y}) [attempt {clicked_count}].")
@@ -655,7 +651,37 @@ def trigger_system_dialer(clean_number: str) -> bool:
     except Exception:
         pass
 
-    # 3. Attempt direct WinRT cellular dial via PhoneLine API (Silent background dial)
+    # 3. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
+    # Pinning target_application_package_family_name tells Windows to route the call
+    # exclusively to Microsoft Phone Link, placing the call in native 'Call on PC' mode.
+    try:
+        import winrt.windows.system as sys_winrt
+        import winrt.windows.foundation as fnd_winrt
+        import asyncio
+        import concurrent.futures
+
+        def _launch_targeted(num: str):
+            async def _coro():
+                options = sys_winrt.LauncherOptions()
+                options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
+                uri = fnd_winrt.Uri(f"tel:{num}")
+                ok = await sys_winrt.Launcher.launch_uri_async(uri, options)
+                return ok
+
+            return asyncio.run(_coro())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            phone_link_ok = pool.submit(_launch_targeted, e164_number).result(timeout=3.0)
+
+        if phone_link_ok:
+            print(f"[Outbound Dialer] Dispatched {e164_number} directly to Microsoft Phone Link (Call on PC mode).")
+            # Auto-press dialer helper will press green Call button if needed
+            threading.Thread(target=_auto_press_dial, args=(clean_number,), daemon=True).start()
+            return True
+    except Exception as e:
+        print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
+
+    # 4. Fallback path: Direct WinRT cellular dial via PhoneLine API
     try:
         import winrt.windows.applicationmodel.calls as calls_winrt
         import asyncio
@@ -680,55 +706,16 @@ def trigger_system_dialer(clean_number: str) -> bool:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             direct_dialed = pool.submit(_direct_winrt_dial, e164_number).result(timeout=2.5)
         if direct_dialed:
-            print(f"[Outbound Dialer] Dispatched cellular call to {e164_number} directly via WinRT PhoneLine.")
+            print(f"[Outbound Dialer] Dispatched cellular call to {e164_number} via WinRT PhoneLine.")
             ensure_phone_link_visible()
-            # Trigger audio transfer to PC watcher in background
-            trigger_transfer_to_pc_async(timeout=20.0)
             return True
     except Exception as e:
         print(f"[Outbound Dialer] Direct WinRT line check: {e}")
 
-    # 4. Fallback path: Launch auto-dial helper in background thread to navigate Calls tab & press Enter/ButtonCall
+    # 5. Ultimate Fallback: Launch auto-dial helper in background thread to navigate Calls tab & press Enter/ButtonCall
     threading.Thread(target=_auto_press_dial, args=(clean_number,), daemon=True).start()
-
-    # 5. Specifically target Microsoft Phone Link via Windows Runtime (WinRT) LauncherOptions
-    # Pinning target_application_package_family_name tells Windows to route the call
-    # exclusively to Microsoft Phone Link, completely bypassing MicroSIP, Skype, or Zoom.
-    try:
-        import winrt.windows.system as sys_winrt
-        import winrt.windows.foundation as fnd_winrt
-        import asyncio
-        import concurrent.futures
-
-        def _launch_targeted(num: str):
-            async def _coro():
-                options = sys_winrt.LauncherOptions()
-                options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
-                try:
-                    import winrt.windows.ui.viewmanagement as vm
-                    options.desired_remaining_view = vm.ViewSizePreference.USE_NONE
-                except Exception:
-                    pass
-                uri = fnd_winrt.Uri(f"tel:{num}")
-                ok = await sys_winrt.Launcher.launch_uri_async(uri, options)
-                return ok
-
-            return asyncio.run(_coro())
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            phone_link_ok = pool.submit(_launch_targeted, e164_number).result(timeout=3.0)
-
-        if phone_link_ok:
-            print(f"[Outbound Dialer] Dispatched {e164_number} directly to Microsoft Phone Link.")
-            trigger_transfer_to_pc_async(timeout=20.0)
-            return True
-    except Exception as e:
-        print(f"[Outbound Dialer] WinRT Phone Link targeting: {e}")
-
-    # 6. Fallback: Ensure Phone Link is active and let _auto_press_dial handle the dial
     ensure_phone_link_visible()
     print(f"[Outbound Dialer] Brought Phone Link to foreground for automated dial of {e164_number}.")
-    trigger_transfer_to_pc_async(timeout=20.0)
     return True
 
 

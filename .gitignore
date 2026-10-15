@@ -25,6 +25,7 @@ dist/
 
 # Scratch exploration scripts
 scratch_*.py
+scratch/
 
 # Recordings and user settings
 recordings/
