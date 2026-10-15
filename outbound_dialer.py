@@ -82,7 +82,32 @@ def trigger_system_dialer(clean_number: str) -> bool:
     except Exception:
         pass
 
-    # 2. Trigger standard Windows tel: protocol
+    # 2. Specifically target Microsoft Phone Link (bypasses MicroSIP, Skype, Zoom)
+    try:
+        import winrt.windows.system as sys_winrt
+        import winrt.windows.foundation as fnd_winrt
+        import asyncio
+        import concurrent.futures
+
+        def _launch_targeted(num: str):
+            async def _coro():
+                options = sys_winrt.LauncherOptions()
+                options.target_application_package_family_name = "Microsoft.YourPhone_8wekyb3d8bbwe"
+                uri = fnd_winrt.Uri(f"tel:{num}")
+                return await sys_winrt.Launcher.launch_uri_async(uri, options)
+
+            return asyncio.run(_coro())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            phone_link_ok = pool.submit(_launch_targeted, e164_number).result(timeout=3.0)
+
+        if phone_link_ok:
+            print(f"[Outbound Dialer] Dispatched {e164_number} directly to Microsoft Phone Link (bypassed MicroSIP).")
+            return True
+    except Exception as e:
+        print(f"[Outbound Dialer] Targeted launch note: {e}")
+
+    # 3. Fallback: Standard Windows tel: protocol
     try:
         os.startfile(f"tel:{e164_number}")
         print(f"[Outbound Dialer] Dispatched {e164_number} via standard Windows tel: protocol.")
