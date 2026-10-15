@@ -578,6 +578,7 @@ class HFPBridge:
         self._is_buffering = True
         # 120ms pre-buffer cushion (16000 samples/sec * 2 bytes/sample * 0.12s = 3840 bytes)
         self.prebuffer_target_bytes = 3840
+        self.has_sco_audio = False
 
     def input_callback(self, indata, frames, time_info, status):
         """PortAudio fallback callback for standard audio devices."""
@@ -662,9 +663,9 @@ class HFPBridge:
 
     def _capture_worker(self):
         """Native WASAPI Capture Worker Thread (Microphone from phone over Bluetooth SCO).
-        Includes starvation detection: if the capture client delivers zero packets for >3 seconds
-        after a successful Start(), the client is torn down and re-created, which forces Windows
-        to re-open the SCO channel that may have been in a phantom state after Transfer-to-PC."""
+        Non-blocking SCO probe: if audio has not been transferred to PC yet (zero packets for >0.4s),
+        the client is immediately released and sleeps 0.25s so Phone Link / Android can negotiate
+        the Bluetooth SCO channel without any device contention or dropouts."""
         comtypes.CoInitialize()
         try:
             chunk_remainder = bytearray()
@@ -693,7 +694,8 @@ class HFPBridge:
 
                     client.Start()
 
-                    last_data_time = time.time()
+                    probe_start = time.time()
+                    last_packet_time = probe_start
                     ever_received_data = False
                     consecutive_errs = 0
 
@@ -729,8 +731,9 @@ class HFPBridge:
                                 break
 
                             got_packet = True
+                            last_packet_time = time.time()
                             ever_received_data = True
-                            last_data_time = time.time()
+                            self.has_sco_audio = True
                             byte_count = num_frames * 2
                             if flags_val & 0x02:  # AUDCLNT_BUFFERFLAGS_SILENT
                                 raw_data = b"\x00" * byte_count
@@ -756,6 +759,14 @@ class HFPBridge:
                             break
 
                         if not got_packet:
+                            if not ever_received_data and (time.time() - probe_start > 0.4):
+                                # Zero audio frames delivered: call is still on mobile!
+                                # Release audio client immediately so user can click 'Transfer to PC' with zero lock/contention!
+                                break
+                            elif ever_received_data and (time.time() - last_packet_time > 2.0):
+                                # Audio stream stopped (e.g. transferred back to phone or call ended)
+                                self.has_sco_audio = False
+                                break
                             time.sleep(0.01)
 
                 except Exception as ex:
@@ -768,8 +779,10 @@ class HFPBridge:
                             client.Stop()
                         except Exception:
                             pass
-                    # Immediate re-init without stalling Bluetooth SCO watchdog
-                    if self._wasapi_running:
+                    # If waiting for SCO to connect, brief pause before next gentle probe to keep endpoint unlocked
+                    if self._wasapi_running and not self.has_sco_audio:
+                        time.sleep(0.25)
+                    elif self._wasapi_running:
                         time.sleep(0.05)
         finally:
             comtypes.CoUninitialize()
@@ -779,6 +792,12 @@ class HFPBridge:
         comtypes.CoInitialize()
         try:
             while self._wasapi_running:
+                # Wait until capture worker confirms incoming audio packets from SCO
+                # so the render client never locks the Bluetooth endpoint before Transfer to PC!
+                if not self.has_sco_audio:
+                    time.sleep(0.1)
+                    continue
+
                 client = None
                 try:
                     enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
@@ -1058,6 +1077,7 @@ class HFPBridge:
     def stop(self):
         if self.is_wasapi:
             self._wasapi_running = False
+            self.has_sco_audio = False
             if self._cap_thread:
                 self._cap_thread.join(timeout=1.0)
                 self._cap_thread = None
