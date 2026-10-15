@@ -307,6 +307,42 @@ def is_pc_voip_call_active() -> bool:
     return False
 
 
+def set_phone_link_speaker_mute(mute: bool = True):
+    """Mutes or unmutes Microsoft Phone Link on the PC default speakers so caller voice
+    does not blare out loud from laptop speakers during active AI calls."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            p = s.Process
+            if p and "phoneexperiencehost" in p.name().lower():
+                s.SimpleAudioVolume.SetMute(1 if mute else 0, None)
+    except Exception:
+        pass
+
+
+class PhoneLinkAudioSilencer:
+    """Watchdog thread that keeps Phone Link's speaker output muted throughout the call."""
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="PhoneLinkSilencer")
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            set_phone_link_speaker_mute(True)
+            time.sleep(0.5)
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        set_phone_link_speaker_mute(False)
+
+
 HFP_RATE = 16000       # native rate of the Windows HFP endpoint
 HFP_BLOCK = 320        # 20ms block @ 16kHz (320 samples = 640 bytes)
 
@@ -2082,6 +2118,7 @@ async def main_async():
         else:
             bridge = HFPBridge(in_dev=cached_in_dev, out_dev=cached_out_dev)
 
+        silencer = None
         try:
             loop = asyncio.get_running_loop()
             started = await loop.run_in_executor(None, lambda: bridge.start(is_outbound=is_outbound))
@@ -2126,6 +2163,10 @@ async def main_async():
                 except Exception:
                     pass
 
+                # Mute Phone Link on laptop speakers so caller voice does not echo in the room
+                silencer = PhoneLinkAudioSilencer()
+                silencer.start()
+
                 # Initialize Dual-Track Audio Recorder
                 recorder = CallRecorder(call_type=call_type)
                 if outbound_info:
@@ -2157,6 +2198,13 @@ async def main_async():
             print(f"\n[Gateway Session Error]: {type(e).__name__}: {e}")
             traceback.print_exc(file=sys.stdout)
         finally:
+            if silencer:
+                try:
+                    silencer.stop()
+                except Exception:
+                    pass
+                silencer = None
+
             if prewarmer:
                 await prewarmer.release()
                 prewarmer = None
