@@ -6,6 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9%2B-brightgreen?style=for-the-badge&logo=python)
 ![Model](https://img.shields.io/badge/AI%20Engine-Gemini%203.1%20Flash%20Live-orange?style=for-the-badge&logo=google)
 ![Latency](https://img.shields.io/badge/Latency-~800ms%20Roundtrip-success?style=for-the-badge)
+![Cost](https://img.shields.io/badge/Telephony%20Cost-%240%20(Own%20SIM)-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-purple?style=for-the-badge)
 
 **A high-performance Windows telephony gateway bridging standard cellular telephone calls directly to Google's multimodal Gemini Live API (`gemini-3.1-flash-live-preview`) over Bluetooth Hands-Free Profile (HFP).**
@@ -23,7 +24,11 @@
 
 ## 🌟 What is Callink?
 
-**Callink** enables an AI agent to hold real-time, low-latency, full-duplex spoken conversations with anyone calling your phone number over the standard cellular GSM/PSTN network—or when you dispatch proactive outbound calls to customers.
+**Callink was created to build an ultra-responsive AI voice calling agent with virtually $0 cost for personal and everyday business use cases.**
+
+Unlike conventional voice AI platforms that force you to buy expensive virtual telephony numbers, SIP trunks, or pay steep per-minute fees to third-party services like **Bolna, Twilio, VoiceLink, or Exotel**, **Callink does NOT require any virtual AI phone number**. Instead, it runs directly on **your own existing smartphone and personal cellular phone number**!
+
+Anyone can call your standard mobile number to converse with your AI agent, and you can dispatch proactive outbound calls straight through your cellular SIM card—without paying a single cent in telephony infrastructure or VoIP subscription charges.
 
 Unlike traditional telephony solutions that require expensive cloud SIP trunks, Asterisk PBX servers, and cascaded STT &rarr; LLM &rarr; TTS pipelines that suffer from 3–5 seconds of awkward conversational delay, **Callink bridges your physical smartphone's Bluetooth baseband audio directly to Google's native speech-to-speech Gemini Live WebSocket gateway on Windows**.
 
@@ -106,7 +111,12 @@ Callink was engineered from first principles to overcome the prohibitive convers
 
 ## ✨ Key Features
 
-### 1. 📞 Inbound & Outbound Cellular AI Telephony
+### 1. 💰 $0 Telephony Cost & Runs on Your Own Phone Number
+- **Zero Third-Party Telephony Numbers:** No need to buy, configure, or pay monthly subscriptions for virtual phone numbers from **Bolna, Twilio, VoiceLink, Exotel**, or cloud SIP trunk providers.
+- **Uses Your Real Cellular SIM:** Runs directly through the SIM card already inside your smartphone using standard carrier voice calling.
+- **Trusted Personal Identity:** When you dispatch outbound calls or receive inbound calls, it operates on your real cellular number—never an unknown VoIP or spam-flagged virtual number.
+
+### 2. 📞 Inbound & Outbound Cellular AI Telephony
 - **Automatic Inbound Detection:** Automatically answers incoming phone calls via Windows Runtime (`PhoneCallManager`) and starts the AI conversation without manual intervention.
 - **Outbound AI Call Dispatcher:** Dispatch proactive outbound calls directly from the web dashboard. Enter the recipient's phone number, name, and conversation goal—the AI dials via Windows Phone Link / Android dialer and speaks first with a tailored greeting!
 - **Call Pre-Warming:** Telephony listeners detect incoming rings and pre-initialize WebSocket connections to achieve zero-latency pickup.
