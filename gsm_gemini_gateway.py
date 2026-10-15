@@ -307,21 +307,74 @@ def is_pc_voip_call_active() -> bool:
     return False
 
 
-def set_phone_link_speaker_mute(mute: bool = True):
-    """Mutes or unmutes Microsoft Phone Link on the PC default speakers so caller voice
-    does not blare out loud from laptop speakers during active AI calls."""
+def set_phone_link_audio_silenced(silenced: bool = True):
+    """Silences Microsoft Phone Link (PhoneExperienceHost) on BOTH PC speakers and PC microphone
+    without spamming COM calls, completely eliminating audio leaks, clicking, and beep artifacts."""
     try:
-        from pycaw.pycaw import AudioUtilities
-        for s in AudioUtilities.GetAllSessions():
-            p = s.Process
-            if p and "phoneexperiencehost" in p.name().lower():
-                s.SimpleAudioVolume.SetMute(1 if mute else 0, None)
+        import comtypes
+        com_initialized = False
+        try:
+            comtypes.CoInitialize()
+            com_initialized = True
+        except Exception:
+            pass
+
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioSessionManager2, ISimpleAudioVolume, IAudioSessionControl2
+            from comtypes import CLSCTX_ALL
+            import psutil
+
+            # 1. Silence Speaker Output (Render)
+            for s in AudioUtilities.GetAllSessions():
+                p = s.Process
+                if p and "phoneexperiencehost" in p.name().lower():
+                    vol = s.SimpleAudioVolume
+                    target_mute = 1 if silenced else 0
+                    if vol.GetMute() != target_mute:
+                        vol.SetMute(target_mute, None)
+                    if silenced and vol.GetMasterVolume() > 0.0:
+                        vol.SetMasterVolume(0.0, None)
+                    elif not silenced and vol.GetMasterVolume() == 0.0:
+                        vol.SetMasterVolume(1.0, None)
+
+            # 2. Silence Microphone Input (Capture)
+            try:
+                mic = AudioUtilities.GetMicrophone()
+                if mic:
+                    mgr = mic.Activate(IAudioSessionManager2._iid_, CLSCTX_ALL, None)
+                    enumerator = mgr.QueryInterface(IAudioSessionManager2).GetSessionEnumerator()
+                    for i in range(enumerator.GetCount()):
+                        ctl = enumerator.GetSession(i)
+                        ctl2 = ctl.QueryInterface(IAudioSessionControl2)
+                        pid = ctl2.GetProcessId()
+                        if pid > 0:
+                            try:
+                                proc_name = psutil.Process(pid).name().lower()
+                            except Exception:
+                                proc_name = ""
+                            if "phoneexperiencehost" in proc_name:
+                                vol = ctl.QueryInterface(ISimpleAudioVolume)
+                                target_mute = 1 if silenced else 0
+                                if vol.GetMute() != target_mute:
+                                    vol.SetMute(target_mute, None)
+                                if silenced and vol.GetMasterVolume() > 0.0:
+                                    vol.SetMasterVolume(0.0, None)
+                                elif not silenced and vol.GetMasterVolume() == 0.0:
+                                    vol.SetMasterVolume(1.0, None)
+            except Exception:
+                pass
+        finally:
+            if com_initialized:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:
+                    pass
     except Exception:
         pass
 
 
 class PhoneLinkAudioSilencer:
-    """Watchdog thread that keeps Phone Link's speaker output muted throughout the call."""
+    """Watchdog thread that ensures Phone Link's speaker & mic stay muted without redundant calls."""
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread = None
@@ -333,14 +386,14 @@ class PhoneLinkAudioSilencer:
 
     def _run(self):
         while not self._stop_event.is_set():
-            set_phone_link_speaker_mute(True)
-            time.sleep(0.5)
+            set_phone_link_audio_silenced(True)
+            time.sleep(1.0)
 
     def stop(self):
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-        set_phone_link_speaker_mute(False)
+        set_phone_link_audio_silenced(False)
 
 
 HFP_RATE = 16000       # native rate of the Windows HFP endpoint
