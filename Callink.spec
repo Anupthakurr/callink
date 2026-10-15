@@ -12,6 +12,8 @@ datas += copy_metadata('pycaw')
 datas += copy_metadata('PyPDF2')
 datas += copy_metadata('python-docx')
 datas += copy_metadata('comtypes')
+datas += copy_metadata('scipy')
+hiddenimports += ['scipy.signal', 'scipy.signal._upfirdn']
 tmp_ret = collect_all('sounddevice')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('winrt')
@@ -39,7 +41,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['torch', 'torchvision', 'pandas', 'matplotlib', 'tkinter', 'IPython', 'jupyter'],
     noarchive=False,
     optimize=0,
 )
