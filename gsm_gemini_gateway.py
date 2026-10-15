@@ -622,6 +622,8 @@ class HFPBridge:
         self.prebuffer_target_bytes = 5120
         self.has_sco_audio = False
         self.resampler = HFPResampler()
+        self.last_audio_sent_time = 0.0
+        self._empty_since = None
 
     def input_callback(self, indata, frames, time_info, status):
         """PortAudio fallback callback for standard audio devices."""
@@ -641,6 +643,7 @@ class HFPBridge:
             return
         with self._playback_lock:
             self._playback_bytes.extend(pcm16)
+            self._empty_since = None
             if self._is_buffering and len(self._playback_bytes) >= self.prebuffer_target_bytes:
                 self._is_buffering = False
                 if self.playback_started_at is None:
@@ -655,8 +658,14 @@ class HFPBridge:
                     self.playback_started_at = time.time()
 
     def has_pending_playback(self) -> bool:
+        """Returns True if AI audio is currently buffered or actively rendering out through the speaker."""
         with self._playback_lock:
-            return len(self._playback_bytes) > 0 or not self._is_buffering
+            if len(self._playback_bytes) > 0:
+                return True
+            # Even if buffer just drained, hardware DAC is still outputting the last block (~40-60ms)
+            if self.last_audio_sent_time > 0 and (time.time() - self.last_audio_sent_time < 0.08):
+                return True
+            return False
 
     def output_callback(self, outdata, frames, time_info, status):
         """High-fidelity PortAudio callback for Bluetooth HFP audio playback.
@@ -671,17 +680,26 @@ class HFPBridge:
                     # Waiting for initial pre-buffer threshold before starting turn
                     pass
                 elif len(self._playback_bytes) == 0:
-                    # Buffer temporarily dry mid-speech — DO NOT re-enter prebuffering mid-turn!
-                    self.playback_started_at = None
+                    now = time.time()
+                    if self._empty_since is None:
+                        self._empty_since = now
+                    elif now - self._empty_since >= 0.08:
+                        # Turn playback has completely finished! Reset prebuffering for next turn
+                        self._is_buffering = True
+                        self.playback_started_at = None
                 else:
+                    self._empty_since = None
                     if self.playback_started_at is None:
                         self.playback_started_at = time.time()
 
                     bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
                     raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
                     del self._playback_bytes[:bytes_to_pull]
+                    if len(self._playback_bytes) == 0:
+                        self._empty_since = time.time()
 
             if raw_chunk:
+                self.last_audio_sent_time = time.time()
                 samples = len(raw_chunk) // 2
                 data = np.frombuffer(raw_chunk, dtype=np.int16).copy()
 
@@ -903,17 +921,21 @@ class HFPBridge:
                                 if self._is_buffering:
                                     pass
                                 elif len(self._playback_bytes) == 0:
-                                    self._is_buffering = True
-                                    self.playback_started_at = None
+                                    now = time.time()
+                                    if self._empty_since is None:
+                                        self._empty_since = now
+                                    elif now - self._empty_since >= 0.08:
+                                        self._is_buffering = True
+                                        self.playback_started_at = None
                                 else:
+                                    self._empty_since = None
                                     if self.playback_started_at is None:
                                         self.playback_started_at = time.time()
                                     bytes_to_pull = min(len(self._playback_bytes), bytes_needed)
                                     raw_chunk = bytes(self._playback_bytes[:bytes_to_pull])
                                     del self._playback_bytes[:bytes_to_pull]
                                     if len(self._playback_bytes) == 0:
-                                        self._is_buffering = True
-                                        self.playback_started_at = None
+                                        self._empty_since = time.time()
 
                             try:
                                 p_buffer = render.GetBuffer(frames_to_write)
@@ -922,6 +944,7 @@ class HFPBridge:
                                 continue
 
                             if raw_chunk:
+                                self.last_audio_sent_time = time.time()
                                 chunk_len = len(raw_chunk)
                                 ctypes.memmove(p_buffer, raw_chunk, chunk_len)
                                 if chunk_len < bytes_needed:
@@ -970,6 +993,8 @@ class HFPBridge:
         """Immediately drain pending audio from playback buffer for instantaneous barge-in."""
         self.last_interrupted_at = time.time()
         self.playback_started_at = None
+        self.last_audio_sent_time = 0.0
+        self._empty_since = None
         self.last_played_chunk = b"\x00" * 640
         with self._playback_lock:
             drained_bytes = len(self._playback_bytes)
@@ -1412,7 +1437,8 @@ async def run_gemini_bridge(
                     if now - last_report >= 2.0:
                         last_report = now
                         if sent_chunks > 0:
-                            print(f"[Audio Link] 🎙️ Caller Audio: RMS={latest_rms} | Streamed: {sent_chunks} chunks to Gemini Live")
+                            ai_status = "AI Speaking (echo muted)" if bridge.has_pending_playback() else "Line Open"
+                            print(f"[Audio Link] 🎙️ Caller Audio: RMS={latest_rms} | Streamed: {sent_chunks} chunks to Gemini Live ({ai_status})")
                         elif bridge.total_input_frames == 0:
                             print("[Audio Link] ⏳ Call connected on PC — waiting for caller voice...")
 
@@ -1515,11 +1541,10 @@ async def run_gemini_bridge(
                     audio_to_send = pcm16
                     if bridge.has_pending_playback():
                         audio_to_send = b"\x00" * len(pcm16)
-                    elif latest_rms < 130:
+                    elif latest_rms < 50:
                         # 2. Software Noise Gate:
-                        # Line noise / background mic hiss (< 130 RMS) is clamped to pure digital silence.
-                        # This enables Gemini Live's VAD to immediately detect the end of caller sentences (in 450ms)
-                        # so Gemini answers every question instantly without hesitation.
+                        # Ambient background hiss (< 50 RMS) is clamped to pure digital silence.
+                        # Legitimate caller speech (even quiet speech > 50 RMS) streams cleanly to Gemini Live.
                         audio_to_send = b"\x00" * len(pcm16)
 
                     try:
