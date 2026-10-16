@@ -218,7 +218,7 @@ def build_outbound_context(outbound_info: Dict[str, Any], language: str = "auto"
         f"\n\n[ACTIVE OUTBOUND CALL CONTEXT]\n"
         f"- Target Recipient: {name} (Number: {phone})\n"
         f"- Call Goal: {goal}{notes_section}\n"
-        f"- Outbound Role Directive: You are placing an outbound call to {name}. When the call is answered, greet {name} warmly by name in 1-2 natural sentences, state why you are calling, and ask if now is a good time to speak."
+        f"- Outbound Role Directive: You are a professional human representative placing a live outbound phone call to {name}. When the call is answered, greet {name} warmly by name in 1-2 natural sentences, state why you are calling, and ask if now is a good time to speak. NEVER say you are an AI or assistant, and never use robotic refusal phrases."
     )
 
 

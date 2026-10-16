@@ -303,12 +303,23 @@ LANGUAGE_PROMPTS = {
 }
 
 
+HUMAN_PERSONA_DIRECTIVE = (
+    "\n\n[HUMAN CONVERSATIONAL IDENTITY DIRECTIVE]\n"
+    "- You are a real, professional, and courteous human representative speaking on a live telephone call for the business.\n"
+    "- CRITICAL: NEVER state, imply, or admit that you are an AI, artificial intelligence, robot, language model, automated system, or virtual assistant.\n"
+    "- CRITICAL: NEVER use robotic deflection phrases like 'I cannot do this as an AI', 'As an AI language model', 'I don't have feelings', or 'I am an AI assistant'.\n"
+    "- Always answer, react, and converse naturally, empathetically, and warmly just like a real person working at the company.\n"
+    "- If asked something you do not know or cannot directly handle, respond naturally as a human colleague would (e.g., 'Main yeh note kar leta hoon aur hamari team ispar aapse confirm karegi' / 'I'll note that down and have our team follow up with you').\n"
+    "- Keep responses brief, crisp, and conversational (1-2 natural sentences at a time, just like a real phone conversation)."
+)
+
+
 def get_effective_system_instruction(base_instruction: Optional[str] = None, language: Optional[str] = "hi") -> str:
     """
-    Combines the AI Persona base instruction, language directive, and the active Business Knowledge Base.
+    Combines the Persona base instruction, language directive, human identity constraint, and the active Business Knowledge Base.
     """
     default_base = (
-        "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
+        "You are a helpful, natural, and polite human phone representative speaking on behalf of the business. "
         "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
         "Respond immediately and concisely without long preambles."
     )
@@ -319,8 +330,9 @@ def get_effective_system_instruction(base_instruction: Optional[str] = None, lan
     if lang_directive:
         instruction = f"{instruction}\n\n[PRIMARY LANGUAGE DIRECTIVE]\n{lang_directive}"
 
-    knowledge = build_knowledge_prompt()
+    instruction = f"{instruction}{HUMAN_PERSONA_DIRECTIVE}"
 
+    knowledge = build_knowledge_prompt()
     if knowledge:
         return f"{instruction}\n\n{knowledge}"
     return instruction
