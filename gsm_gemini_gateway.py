@@ -2039,11 +2039,11 @@ async def main_async():
                 await asyncio.sleep(0.3)
                 continue
 
-            # Break standby loop if an outbound dial is pending OR WinRT/Phone Link reports active call (not in cancel cooldown)
+            # Break standby loop if an outbound dial is pending OR call is actively connected/answered
             outbound_pending = dialer.get_active_outbound()
             if outbound_pending:
                 break
-            if call_active or pl_call_active:
+            if call_active:
                 if time.time() < _call_cancel_cooldown_until:
                     await asyncio.sleep(0.2)
                     continue
@@ -2085,7 +2085,7 @@ async def main_async():
                     prewarmer = GeminiPrewarmer(api_key, GEMINI_MODEL, live_cfg)
                     prewarmer.start_prewarm()
 
-            elif not call_incoming and was_incoming:
+            elif not call_incoming and was_incoming and not call_active:
                 # Ring ceased without being answered (caller hung up / missed call)
                 print("[Telephony] Incoming call ceased before pickup (missed/declined). Returning to standby.")
                 was_incoming = False
