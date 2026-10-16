@@ -543,40 +543,17 @@ def find_active_bthhfenum_endpoints(preferred_phone: str = ""):
 
 def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
     """Discovers Windows Bluetooth Hands-Free HF Audio input and output endpoints.
-    PRIMARY path: WASAPI GUID-based endpoints (stable, immune to PortAudio device index shifts).
-    FALLBACK path: WDM-KS PortAudio integer indices (only when WASAPI resolution fails)."""
+    Directly routes through native Windows WDM-KS PortAudio streams, guaranteeing
+    active bidirectional SCO packet delivery for both incoming caller audio and AI playback."""
     global _last_bth_phone_name
     preferred_phone = os.environ.get("PHONE_NAME", "").strip()
 
-    # 1. PRIMARY: WASAPI GUID resolution via Windows MMDevices registry.
-    #    GUID-based IDs are stable and DO NOT shift even when Bluetooth endpoints
-    #    toggle between ACTIVE/UNPLUGGED states between calls. This eliminates
-    #    PaErrorCode -9996 (paInvalidDevice) caused by stale integer indices.
-    try:
-        cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
-        if cap_id and ren_id and phone_name:
-            _last_bth_phone_name = phone_name
-            if not quiet:
-                print(f"HFP INPUT  : {cap_id} (Windows WASAPI — {phone_name})")
-                print(f"HFP OUTPUT : {ren_id} (Windows WASAPI — {phone_name})")
-            return cap_id, ren_id
-    except Exception:
-        pass
-
-    # 2. FALLBACK: PortAudio WDM-KS integer device index scan.
-    #    Only reached when WASAPI GUID lookup fails (e.g., phone fully disconnected).
-    if not quiet:
-        print("[Audio Link] WASAPI GUID lookup failed — falling back to PortAudio WDM-KS scan...")
-
-    # Update phone name cache for scoring even in fallback path
-    try:
-        _, _, active_phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
-        if active_phone_name:
-            _last_bth_phone_name = active_phone_name
-            if not preferred_phone:
-                preferred_phone = active_phone_name
-    except Exception:
-        pass
+    # 1. Query Windows registry to detect active connected phone name
+    _, _, active_phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
+    if active_phone_name:
+        _last_bth_phone_name = active_phone_name
+        if not preferred_phone:
+            preferred_phone = active_phone_name
 
     try:
         devices = sd.query_devices()
@@ -678,51 +655,6 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
 
     return best_in_idx, best_out_idx
 
-
-
-
-def _find_hfp_portaudio_indices(quiet: bool = True):
-    """Re-queries PortAudio WDM-KS device list to get CURRENT integer indices for HFP endpoints.
-    Called DURING an active call when device state is ACTIVE (not UNPLUGGED),
-    so indices are guaranteed stable for immediate stream open."""
-    try:
-        devices = sd.query_devices()
-        apis = sd.query_hostapis()
-    except Exception:
-        return None, None
-
-    preferred_phone = _last_bth_phone_name.lower() if _last_bth_phone_name else ""
-
-    # Rank WDM-KS highest for direct bthhfenum.sys kernel access
-    api_ranks = {"windows wdm-ks": 10, "windows wasapi": 4, "windows directsound": 2, "mme": 1}
-
-    best_in = None; best_in_score = -1
-    best_out = None; best_out_score = -1
-
-    for i, dev in enumerate(devices):
-        name = dev["name"].lower()
-        if "hands-free" not in name and "handsfree" not in name:
-            continue
-        hostapi_idx = dev.get("hostapi", -1)
-        api_name = apis[hostapi_idx].get("name", "").lower() if 0 <= hostapi_idx < len(apis) else ""
-        api_score = api_ranks.get(api_name, 0)
-
-        # Input
-        if dev["max_input_channels"] > 0:
-            s = api_score + (50 if preferred_phone and preferred_phone in name else 0)
-            if s > best_in_score:
-                best_in = i; best_in_score = s
-        # Output
-        if dev["max_output_channels"] > 0:
-            s = api_score + (50 if preferred_phone and preferred_phone in name else 0)
-            if s > best_out_score:
-                best_out = i; best_out_score = s
-
-    if not quiet and best_out is not None:
-        api_out = apis[devices[best_out]["hostapi"]]["name"] if 0 <= devices[best_out]["hostapi"] < len(apis) else "?"
-        print(f"[WDM-KS] Output device [{best_out}]: {devices[best_out]['name']} ({api_out})")
-
-    return best_in, best_out
 
 class HFPBridge:
     """Reads/writes the Windows Bluetooth HFP device.
@@ -993,29 +925,22 @@ class HFPBridge:
             comtypes.CoUninitialize()
 
     def _render_worker(self):
-        """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO).
-        Starts rendering when EITHER the SCO capture is active OR AI audio is pending playback,
-        so the initial AI greeting always reaches the caller even before they speak."""
+        """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO)."""
         comtypes.CoInitialize()
         try:
             while self._wasapi_running:
-                # Gate: wait for SCO to be active OR for AI audio to be queued for playback.
-                # NOTE: We must NOT gate on has_sco_audio alone — the AI greeting and responses
-                # must reach the caller even if the caller hasn't spoken yet (has_sco_audio=False).
-                with self._playback_lock:
-                    has_pending_ai = len(self._playback_bytes) > 0
-                if not self.has_sco_audio and not has_pending_ai:
-                    time.sleep(0.05)
+                # Wait until capture worker confirms incoming audio packets from SCO
+                # so the render client never locks the Bluetooth endpoint before Transfer to PC!
+                if not self.has_sco_audio:
+                    time.sleep(0.1)
                     continue
 
                 client = None
-                wasapi_render_attempt = getattr(self, '_wasapi_render_fail_count', 0)
                 try:
                     enum_obj = comtypes.client.CreateObject(CLSID_MMDeviceEnumerator, interface=IMMDeviceEnumerator)
                     dev = enum_obj.GetDevice(self.output_device)
                     p_client = dev.Activate(ctypes.byref(IID_IAudioClient), 7, None)
                     client = p_client.QueryInterface(IAudioClient)
-                    print(f"[Render] WASAPI render client opened for: {self.output_device}")
 
                     wfx = WAVEFORMATEX()
                     wfx.wFormatTag = 1  # WAVE_FORMAT_PCM
@@ -1030,7 +955,6 @@ class HFPBridge:
                     # 500ms buffer (5000000 hns) to provide substantial cushion for Bluetooth SCO hardware packets
                     client.Initialize(0, flags, 5000000, 0, ctypes.byref(wfx), None)
                     buf_size = client.GetBufferSize()
-                    print(f"[Render] WASAPI buffer size: {buf_size} frames")
 
                     p_rend = client.GetService(ctypes.byref(IID_IAudioRenderClient))
                     render = p_rend.QueryInterface(IAudioRenderClient)
@@ -1046,8 +970,6 @@ class HFPBridge:
                         pass
 
                     client.Start()
-                    self._wasapi_render_fail_count = 0
-                    print(f"[Render] WASAPI render stream started — AI audio routing to caller active.")
 
                     consecutive_errs = 0
                     while self._wasapi_running:
@@ -1124,11 +1046,7 @@ class HFPBridge:
                             time.sleep(0.005)
 
                 except Exception as ex:
-                    # Log render failures so we can diagnose routing issues
-                    self._wasapi_render_fail_count = getattr(self, '_wasapi_render_fail_count', 0) + 1
-                    fail_count = self._wasapi_render_fail_count
-                    if fail_count <= 3 or fail_count % 10 == 0:
-                        print(f"[Render] WASAPI render error #{fail_count}: {type(ex).__name__}: {ex}")
+                    # Device state transition (e.g. transfer to PC / SCO connect)
                     if self._wasapi_running:
                         time.sleep(0.05)
                 finally:
@@ -1253,36 +1171,11 @@ class HFPBridge:
                     self._cap_thread.start()
                     self._ren_thread.start()
                     time.sleep(0.15)
-
-                    if not (self._cap_thread.is_alive() and self._ren_thread.is_alive()):
+                    if self.is_healthy():
+                        print(f"[Audio Link] WASAPI Bluetooth HFP audio bridge running successfully ({self.phone_name}).\n")
+                        return True
+                    else:
                         raise RuntimeError("WASAPI worker threads did not start properly.")
-
-                    # PRIMARY RENDER PATH: PortAudio WDM-KS output stream.
-                    # WDM-KS goes directly to bthhfenum.sys (SCO kernel driver) → Phone Link → caller.
-                    # WASAPI shared mode may not reliably trigger Phone Link's SCO audio bridging.
-                    # We resolve PortAudio indices FRESH here — call is now active so device is ACTIVE (not UNPLUGGED),
-                    # guaranteeing stable indices without PaErrorCode -9996.
-                    try:
-                        _, pa_out = _find_hfp_portaudio_indices(quiet=False)
-                        if pa_out is not None and not self.output_stream:
-                            self.output_stream = sd.OutputStream(
-                                device=pa_out,
-                                samplerate=HFP_RATE,
-                                channels=1,
-                                dtype="int16",
-                                blocksize=HFP_BLOCK,
-                                latency=0.12,
-                                callback=self.output_callback,
-                            )
-                            self.output_stream.start()
-                            print(f"[Audio Link] WDM-KS render stream active on [{pa_out}] — AI voice routed to caller via SCO.")
-                        else:
-                            print("[Audio Link] WDM-KS output index not found — WASAPI render thread is active as fallback.")
-                    except Exception as pa_err:
-                        print(f"[Audio Link] WDM-KS output stream error ({pa_err}) — WASAPI render thread is fallback.")
-
-                    print(f"[Audio Link] WASAPI Bluetooth HFP audio bridge running successfully ({self.phone_name}).\n")
-                    return True
 
                 # 5. PortAudio Fallback Engine
                 if not self.output_stream:
@@ -2146,11 +2039,11 @@ async def main_async():
                 await asyncio.sleep(0.3)
                 continue
 
-            # Break standby loop if an outbound dial is pending OR call is actively connected/answered
+            # Break standby loop if an outbound dial is pending OR WinRT/Phone Link reports active call (not in cancel cooldown)
             outbound_pending = dialer.get_active_outbound()
             if outbound_pending:
                 break
-            if call_active:
+            if call_active or pl_call_active:
                 if time.time() < _call_cancel_cooldown_until:
                     await asyncio.sleep(0.2)
                     continue
@@ -2192,7 +2085,7 @@ async def main_async():
                     prewarmer = GeminiPrewarmer(api_key, GEMINI_MODEL, live_cfg)
                     prewarmer.start_prewarm()
 
-            elif not call_incoming and was_incoming and not call_active:
+            elif not call_incoming and was_incoming:
                 # Ring ceased without being answered (caller hung up / missed call)
                 print("[Telephony] Incoming call ceased before pickup (missed/declined). Returning to standby.")
                 was_incoming = False
