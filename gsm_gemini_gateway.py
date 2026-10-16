@@ -543,17 +543,40 @@ def find_active_bthhfenum_endpoints(preferred_phone: str = ""):
 
 def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
     """Discovers Windows Bluetooth Hands-Free HF Audio input and output endpoints.
-    Directly routes through native Windows WDM-KS PortAudio streams, guaranteeing
-    active bidirectional SCO packet delivery for both incoming caller audio and AI playback."""
+    PRIMARY path: WASAPI GUID-based endpoints (stable, immune to PortAudio device index shifts).
+    FALLBACK path: WDM-KS PortAudio integer indices (only when WASAPI resolution fails)."""
     global _last_bth_phone_name
     preferred_phone = os.environ.get("PHONE_NAME", "").strip()
 
-    # 1. Query Windows registry to detect active connected phone name
-    _, _, active_phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
-    if active_phone_name:
-        _last_bth_phone_name = active_phone_name
-        if not preferred_phone:
-            preferred_phone = active_phone_name
+    # 1. PRIMARY: WASAPI GUID resolution via Windows MMDevices registry.
+    #    GUID-based IDs are stable and DO NOT shift even when Bluetooth endpoints
+    #    toggle between ACTIVE/UNPLUGGED states between calls. This eliminates
+    #    PaErrorCode -9996 (paInvalidDevice) caused by stale integer indices.
+    try:
+        cap_id, ren_id, phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
+        if cap_id and ren_id and phone_name:
+            _last_bth_phone_name = phone_name
+            if not quiet:
+                print(f"HFP INPUT  : {cap_id} (Windows WASAPI — {phone_name})")
+                print(f"HFP OUTPUT : {ren_id} (Windows WASAPI — {phone_name})")
+            return cap_id, ren_id
+    except Exception:
+        pass
+
+    # 2. FALLBACK: PortAudio WDM-KS integer device index scan.
+    #    Only reached when WASAPI GUID lookup fails (e.g., phone fully disconnected).
+    if not quiet:
+        print("[Audio Link] WASAPI GUID lookup failed — falling back to PortAudio WDM-KS scan...")
+
+    # Update phone name cache for scoring even in fallback path
+    try:
+        _, _, active_phone_name = find_active_bthhfenum_endpoints(preferred_phone=preferred_phone)
+        if active_phone_name:
+            _last_bth_phone_name = active_phone_name
+            if not preferred_phone:
+                preferred_phone = active_phone_name
+    except Exception:
+        pass
 
     try:
         devices = sd.query_devices()
@@ -654,6 +677,7 @@ def find_hfp_devices(quiet: bool = False, force_refresh: bool = False):
         print(f"HFP OUTPUT : [{best_out_idx}] {devices[best_out_idx]['name']} ({api_out})")
 
     return best_in_idx, best_out_idx
+
 
 
 class HFPBridge:
