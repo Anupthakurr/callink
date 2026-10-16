@@ -1867,12 +1867,14 @@ async def watch_call_and_hfp(bridge: HFPBridge, stop_event: asyncio.Event, is_ou
             stop_event.set()
             break
 
-        # Check if Phone Link explicitly reports call ended
+        # Check if Phone Link explicitly reports call ended (only after call was actively connected)
         try:
-            if dialer.is_phone_link_call_ended():
-                print("\n[Phone Link] Explicit call ended event detected.")
-                stop_event.set()
-                break
+            if call_connected and dialer.is_phone_link_call_ended():
+                inactive_count += 1
+                if inactive_count >= 3:
+                    print("\n[Phone Link] Explicit call ended event detected.")
+                    stop_event.set()
+                    break
         except Exception:
             pass
 

@@ -224,14 +224,30 @@ def build_outbound_context(outbound_info: Dict[str, Any], language: str = "auto"
 
 def build_outbound_proactive_prompt(outbound_info: Dict[str, Any], language: str = "auto") -> str:
     """Constructs an ultra-fast, minimal trigger instructing Gemini Live to speak first immediately."""
-    name = outbound_info.get("contact_name", "the customer")
+    name = (outbound_info.get("contact_name") or "").strip()
+    target = name if name and name.lower() != "the customer" else "सामने वाले व्यक्ति"
+    goal = (outbound_info.get("call_goal") or "").strip()
+    goal_clause = f"बताएं कि आपने कॉल क्यों किया है ({goal})" if goal else "कॉल का उद्देश्य बताएं"
+
     lang_clean = (language or "auto").strip().lower()
-    if lang_clean == "hi":
-        return f"[कॉल कनेक्ट हो गया है। {name} को तुरंत नमस्ते कहें और 1-2 वाक्यों में बताएं कि आपने कॉल क्यों किया है।]"
+    if lang_clean in ("hi", "auto"):
+        return (
+            f"[आउटबाउंड कॉल कनेक्ट हो गई है। तुरंत बातचीत शुरू करें। "
+            f"{target} को नमस्ते कहें और 1-2 स्वाभाविक वाक्यों में स्पष्ट बताएं: '{goal_clause}'। "
+            f"महत्वपूर्ण निर्देश: यह आउटबाउंड कॉल है, इसलिए कभी भी 'कॉल करने के लिए धन्यवाद' न कहें, क्योंकि कॉल आपने किया है!]"
+        )
     elif lang_clean == "mai":
-        return f"[कॉल कनेक्ट भऽ गेल। {name} कें तुरंत प्रणाम करू आ 1-2 वाक्य मे कहू जे अहाँ फोन किएक कएने छी।]"
+        return (
+            f"[आउटबाउंड कॉल कनेक्ट भऽ गेल। तुरंत बातचीत शुरू करू। "
+            f"{target} कें प्रणाम करू आ 1-2 वाक्य मे कहू जे अहाँ फोन किएक कएने छी: '{goal_clause}'। "
+            f"कखनो 'कॉल करय लेल धन्यवाद' नहि कहब, किएक त' फोन अहाँ कएने छी!]"
+        )
     else:
-        return f"[The call is connected with {name}. Immediately speak your opening greeting now in 1-2 concise sentences.]"
+        target_en = name if name and name.lower() != "the customer" else "the recipient"
+        return (
+            f"[The outbound call is connected with {target_en}. Immediately introduce yourself and state your purpose: '{goal}'. "
+            f"Speak 1-2 natural, crisp sentences. CRITICAL: DO NOT say 'thank you for calling' since you placed this call.]"
+        )
 
 
 # =============================================================================
