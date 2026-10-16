@@ -207,33 +207,31 @@ def consume_active_outbound() -> Optional[Dict[str, Any]]:
         return info
 
 
-def build_outbound_proactive_prompt(outbound_info: Dict[str, Any], language: str = "hi") -> str:
-    """Constructs the initial directive instructing Gemini Live to speak first."""
+def build_outbound_context(outbound_info: Dict[str, Any], language: str = "auto") -> str:
+    """Constructs comprehensive outbound context for system instruction priming."""
     name = outbound_info.get("contact_name", "the customer")
     goal = outbound_info.get("call_goal", "follow up and assist with their inquiry")
     notes = outbound_info.get("lead_notes", "")
     phone = outbound_info.get("display_number") or outbound_info.get("phone_number", "")
-
-    notes_section = f"\nLead Context / Prior Notes: {notes}" if notes else ""
-
-    lang_hint = ""
-    lang_clean = (language or "hi").strip().lower()
-    if lang_clean == "hi":
-        lang_hint = " Greet and speak primarily in natural, polite Hindi (हिंदी) (e.g., 'नमस्ते' / 'Hello' with their name)."
-    elif lang_clean == "mai":
-        lang_hint = " Greet and speak primarily in natural, polite Maithili (मैथिली)."
-
+    notes_section = f"\n- Lead Context / Prior Notes: {notes}" if notes else ""
     return (
-        f"[OUTBOUND CALL ENGAGEMENT DIRECTIVE]\n"
-        f"You are placing an OUTBOUND telephonic phone call to {name} (Number: {phone}).\n"
-        f"Primary Call Objective: {goal}.{notes_section}\n\n"
-        f"CRITICAL INSTRUCTION: The recipient has just answered the phone. YOU MUST SPEAK FIRST!{lang_hint}\n"
-        f"Deliver a warm, professional, and natural opening line (1-2 short sentences):\n"
-        f"1. Greet them politely by name.\n"
-        f"2. Introduce yourself and your company clearly.\n"
-        f"3. State the purpose of your call concisely and check if now is a convenient time to speak.\n"
-        f"Speak with confidence and high energy suitable for an outbound representative."
+        f"\n\n[ACTIVE OUTBOUND CALL CONTEXT]\n"
+        f"- Target Recipient: {name} (Number: {phone})\n"
+        f"- Call Goal: {goal}{notes_section}\n"
+        f"- Outbound Role Directive: You are placing an outbound call to {name}. When the call is answered, greet {name} warmly by name in 1-2 natural sentences, state why you are calling, and ask if now is a good time to speak."
     )
+
+
+def build_outbound_proactive_prompt(outbound_info: Dict[str, Any], language: str = "auto") -> str:
+    """Constructs an ultra-fast, minimal trigger instructing Gemini Live to speak first immediately."""
+    name = outbound_info.get("contact_name", "the customer")
+    lang_clean = (language or "auto").strip().lower()
+    if lang_clean == "hi":
+        return f"[कॉल कनेक्ट हो गया है। {name} को तुरंत नमस्ते कहें और 1-2 वाक्यों में बताएं कि आपने कॉल क्यों किया है।]"
+    elif lang_clean == "mai":
+        return f"[कॉल कनेक्ट भऽ गेल। {name} कें तुरंत प्रणाम करू आ 1-2 वाक्य मे कहू जे अहाँ फोन किएक कएने छी।]"
+    else:
+        return f"[The call is connected with {name}. Immediately speak your opening greeting now in 1-2 concise sentences.]"
 
 
 # =============================================================================

@@ -1399,7 +1399,7 @@ async function loadSettings() {
 async function saveSettings() {
   const apiKey = document.getElementById('inputApiKey').value.trim();
   const voiceName = document.getElementById('selectVoice').value;
-  const language = document.getElementById('selectLanguage')?.value || 'hi';
+  const language = document.getElementById('selectLanguage')?.value || 'auto';
   const prompt = document.getElementById('textareaPrompt').value.trim();
   const vad = parseInt(document.getElementById('sliderVad').value, 10);
 

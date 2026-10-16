@@ -20,25 +20,7 @@ echo (This may take 1-2 minutes to package all dependencies)
 echo.
 
 
-pyinstaller --noconsole --onefile --clean ^
-    --name "Callink" ^
-    --add-data "web;web" ^
-    --collect-all sounddevice ^
-    --collect-all winrt ^
-    --collect-all google.genai ^
-    --collect-all aiohttp ^
-    --collect-all pycaw ^
-    --collect-all PyPDF2 ^
-    --collect-all docx ^
-    --collect-all comtypes ^
-    --copy-metadata google-genai ^
-    --copy-metadata sounddevice ^
-    --copy-metadata aiohttp ^
-    --copy-metadata pycaw ^
-    --copy-metadata PyPDF2 ^
-    --copy-metadata python-docx ^
-    --copy-metadata comtypes ^
-    gsm_gemini_gateway.py
+pyinstaller --noconfirm Callink.spec
 
 if %ERRORLEVEL% neq 0 (
     echo.
@@ -48,15 +30,19 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
+echo Copying Callink.exe to root and Desktop...
+copy /y dist\Callink.exe .\Callink.exe >nul 2>&1
+if exist "C:\Users\tanup\OneDrive\Desktop" (
+    copy /y dist\Callink.exe "C:\Users\tanup\OneDrive\Desktop\Callink.exe" >nul 2>&1
+    echo [OK] Updated Desktop: C:\Users\tanup\OneDrive\Desktop\Callink.exe
+)
+
+echo.
 echo ============================================================
 echo [SUCCESS] Single standalone executable built successfully!
 echo Location: dist\Callink.exe
+echo Desktop : C:\Users\tanup\OneDrive\Desktop\Callink.exe
 echo.
-echo To share with a friend:
-echo 1. Simply send them the single file: dist\Callink.exe
-echo 2. Your friend can double-click Callink.exe directly!
-echo    - No Python required.
-echo    - If GEMINI_API_KEY is not set, it will prompt them to enter it on first run.
 echo ============================================================
 pause
 

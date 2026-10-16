@@ -107,41 +107,24 @@ except ImportError:
 
 
 class HFPResampler:
-    """High-fidelity 24kHz -> 16kHz downsampler using polyphase Kaiser-windowed FIR filtering.
-    Maintains continuous sample phase across WebSocket chunks to eliminate all boundary crackle,
-    and applies steep anti-aliasing to remove metallic buzzing and harsh distortion."""
+    """High-fidelity 24kHz -> 16kHz downsampler using audioop.ratecv with continuous internal state.
+    Maintains mathematically perfect sample continuity across WebSocket chunks to eliminate all
+    boundary crackle, clicking, fluttering, and voice distortion."""
     def __init__(self):
-        self.remainder = bytearray()
         self._state = None
 
     def resample(self, pcm_24k: bytes) -> bytes:
         if not pcm_24k:
             return b""
-        data = self.remainder + pcm_24k
-        # 24kHz -> 16kHz is ratio 3:2. Each block of 3 samples (6 bytes) yields 2 samples (4 bytes).
-        valid_bytes = (len(data) // 6) * 6
-        if valid_bytes == 0:
-            self.remainder = data
-            return b""
-
-        chunk = data[:valid_bytes]
-        self.remainder = data[valid_bytes:]
-
-        if _HAVE_SCIPY:
-            s24 = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
-            # Polyphase Kaiser FIR resampler (up=2, down=3)
-            s16 = resample_poly(s24, 2, 3)
-            # Mild voice presence gain (+1.5 dB = 1.18x) with soft limiting to prevent any digital overflow
-            s16 = s16 * 1.18
-            np.clip(s16, -32760, 32760, out=s16)
-            return s16.astype(np.int16).tobytes()
-        else:
-            pcm_16k, self._state = audioop.ratecv(bytes(chunk), 2, 1, GEMINI_OUT_RATE, HFP_RATE, self._state)
-            return pcm_16k
+        pcm_16k, self._state = audioop.ratecv(pcm_24k, 2, 1, GEMINI_OUT_RATE, HFP_RATE, self._state)
+        if pcm_16k:
+            # Mild voice presence gain (+1.2 dB = 1.15x) for crystal-clear telephone audibility
+            pcm_16k = audioop.mul(pcm_16k, 2, 1.15)
+        return pcm_16k
 
     def reset(self):
-        self.remainder.clear()
         self._state = None
+
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -707,8 +690,8 @@ class HFPBridge:
         self._playback_lock = threading.Lock()
         self._playback_bytes = bytearray()
         self._is_buffering = True
-        # 160ms pre-buffer cushion (16000 samples/sec * 2 bytes/sample * 0.16s = 5120 bytes)
-        self.prebuffer_target_bytes = 5120
+        # 80ms pre-buffer cushion (16000 samples/sec * 2 bytes/sample * 0.08s = 2560 bytes)
+        self.prebuffer_target_bytes = 2560
         self.has_sco_audio = False
         self.resampler = HFPResampler()
         self.last_audio_sent_time = 0.0
@@ -772,8 +755,8 @@ class HFPBridge:
                     now = time.time()
                     if self._empty_since is None:
                         self._empty_since = now
-                    elif now - self._empty_since >= 0.08:
-                        # Turn playback has completely finished! Reset prebuffering for next turn
+                    elif now - self._empty_since >= 0.50:
+                        # Turn playback has completely finished (500ms of true silence)! Reset prebuffering for next turn
                         self._is_buffering = True
                         self.playback_started_at = None
                 else:
@@ -1013,7 +996,7 @@ class HFPBridge:
                                     now = time.time()
                                     if self._empty_since is None:
                                         self._empty_since = now
-                                    elif now - self._empty_since >= 0.08:
+                                    elif now - self._empty_since >= 0.50:
                                         self._is_buffering = True
                                         self.playback_started_at = None
                                 else:
@@ -1369,8 +1352,10 @@ async def run_gemini_bridge(
 
     settings = load_settings()
     voice_name = settings.get("voice_name", "Puck")
-    lang = settings.get("language", "hi")
+    lang = settings.get("language", "auto")
     base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+    if outbound_info:
+        base_inst = base_inst + dialer.build_outbound_context(outbound_info, language=lang)
     system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
     vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
 
@@ -1444,14 +1429,14 @@ async def run_gemini_bridge(
                         except Exception:
                             pass
 
-                        # 2. Check audio line for recipient voice (RMS > 450)
-                        # Wait at least 1.5s to bypass carrier dialing tones and connection clicks
+                        # 2. Check audio line for recipient voice (RMS > 140)
+                        # Wait at least 0.5s to bypass carrier dialing tones and connection clicks
                         elapsed = time.time() - pickup_start
                         while not bridge.to_ai.empty():
                             try:
                                 chunk = bridge.to_ai.get_nowait()
                                 chunk_rms = audioop.rms(chunk, 2)
-                                if elapsed >= 1.5 and chunk_rms > 450:
+                                if elapsed >= 0.5 and chunk_rms > 140:
                                     consecutive_voice_chunks += 1
                                     if consecutive_voice_chunks >= 2:
                                         print(f"[Gateway] 🔔 Recipient voice detected on line (RMS={chunk_rms})!")
@@ -1465,8 +1450,8 @@ async def run_gemini_bridge(
                         if pickup_detected:
                             break
 
-                        # 3. Proactive pickup fallback: after 8.0s of active call, engage proactive AI greeting!
-                        if elapsed >= 8.0:
+                        # 3. Proactive pickup fallback: after 2.8s of active call, engage proactive AI greeting!
+                        if elapsed >= 2.8:
                             print(f"[Gateway] 🔔 Outbound call active ({elapsed:.1f}s elapsed) — engaging proactive AI greeting!")
                             pickup_detected = True
                             break
@@ -1491,24 +1476,12 @@ async def run_gemini_bridge(
                         print(f"[Gateway] 🚀 Outbound call connected to {outbound_info.get('contact_name')}! Proactive opening prompt dispatched to Gemini Live.")
                     else:
                         print("[Gateway] Requesting immediate inbound AI greeting...")
-                        if lang == "hi":
-                            greeting_turn = (
-                                "[A caller has just connected to the phone call. "
-                                "Immediately greet them warmly and concisely in Hindi in one short sentence, "
-                                "such as 'नमस्ते! कॉल करने के लिए धन्यवाद, मैं आपकी क्या सहायता कर सकता हूँ?']"
-                            )
+                        if lang in ("hi", "auto"):
+                            greeting_turn = "[कॉल कनेक्ट हो गया है। तुरंत बोलें: 'नमस्ते! कॉल करने के लिए धन्यवाद, बताइए मैं आपकी क्या सहायता कर सकता हूँ?']"
                         elif lang == "mai":
-                            greeting_turn = (
-                                "[A caller has just connected to the phone call. "
-                                "Immediately greet them warmly and concisely in Maithili in one short sentence, "
-                                "such as 'प्रणाम! कॉल करय लेल धन्यवाद, हम अहाँक की मद्द कऽ सकैत छी?']"
-                            )
+                            greeting_turn = "[कॉल कनेक्ट भऽ गेल। तुरंत बोलू: 'प्रणाम! कॉल करय लेल धन्यवाद, कहू हम अहाँक की मद्द कऽ सकैत छी?']"
                         else:
-                            greeting_turn = (
-                                "[A caller has just connected to the phone call. "
-                                "Immediately greet them warmly and concisely in one short sentence, "
-                                "such as 'Hello! Thanks for calling, how can I help you today?']"
-                            )
+                            greeting_turn = "[Call connected. Immediately say: 'Hello! Thanks for calling, how can I help you today?']"
                     is_initial_greeting_active = True
                     await session.send_client_content(
                         turns=types.Content(
@@ -2088,7 +2061,7 @@ async def main_async():
                 if api_key:
                     curr_settings = load_settings()
                     v_name = curr_settings.get("voice_name", "Puck")
-                    lang = curr_settings.get("language", "hi")
+                    lang = curr_settings.get("language", "auto")
                     base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
                     sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
                     live_cfg = types.LiveConnectConfig(
@@ -2097,6 +2070,13 @@ async def main_async():
                         speech_config=types.SpeechConfig(
                             voice_config=types.VoiceConfig(
                                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=v_name)
+                            )
+                        ),
+                        realtime_input_config=types.RealtimeInputConfig(
+                            automatic_activity_detection=types.AutomaticActivityDetection(
+                                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                                silence_duration_ms=450,
+                                prefix_padding_ms=100,
                             )
                         ),
                         input_audio_transcription=types.AudioTranscriptionConfig(),
@@ -2141,8 +2121,10 @@ async def main_async():
             if api_key:
                 curr_settings = load_settings()
                 v_name = curr_settings.get("voice_name", "Puck")
-                lang = curr_settings.get("language", "hi")
+                lang = curr_settings.get("language", "auto")
                 base_inst = curr_settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
+                if outbound_info:
+                    base_inst = base_inst + dialer.build_outbound_context(outbound_info, language=lang)
                 sys_inst = km.get_effective_system_instruction(base_inst, language=lang)
                 live_cfg = types.LiveConnectConfig(
                     response_modalities=["AUDIO"],
@@ -2178,8 +2160,8 @@ async def main_async():
             pass
 
 
-        # Allow Windows Bluetooth SCO hardware link 800ms to settle
-        await asyncio.sleep(0.8)
+        # Allow Windows Bluetooth SCO hardware link brief moment to settle
+        await asyncio.sleep(0.15)
 
         # Re-resolve endpoints to capture freshly activated WASAPI or updated endpoints
         active_in, active_out = find_hfp_devices(quiet=True, force_refresh=False)

@@ -203,7 +203,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 # Default gateway settings
 DEFAULT_SETTINGS = {
     "voice_name": "Puck",
-    "language": "hi",
+    "language": "auto",
     "system_instruction": (
         "You are a helpful, natural, and polite AI phone assistant answering calls for the business. "
         "Speak conversationally in short, crisp sentences (1-2 sentences at a time) as in a real phone call. "
@@ -334,7 +334,7 @@ class WebGatewayServer:
         self.state["api_key_configured"] = bool(api_key)
         self.state["gemini_model"] = "gemini-3.1-flash-live-preview"
         self.state["voice_name"] = settings.get("voice_name", "Puck")
-        self.state["language"] = settings.get("language", "hi")
+        self.state["language"] = settings.get("language", "auto")
         self.state["vad_threshold"] = settings.get("vad_threshold", 3600)
         self.state["audio_sample_rate"] = 16000
         self.state["audio_format"] = "16 kHz 16-Bit PCM Mono SCO"
@@ -551,7 +551,7 @@ class WebGatewayServer:
         summary = km.get_knowledge_summary()
         settings = load_settings()
         base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
-        lang = settings.get("language", "hi")
+        lang = settings.get("language", "auto")
         full_inst = km.get_effective_system_instruction(base_inst, language=lang)
         prompt = km.build_knowledge_prompt()
         return web.json_response({
@@ -723,9 +723,8 @@ class WebGatewayServer:
 
         settings = load_settings()
         voice_name = settings.get("voice_name", "Puck")
-        lang = settings.get("language", "hi")
+        lang = settings.get("language", "auto")
         base_inst = settings.get("system_instruction", DEFAULT_SETTINGS["system_instruction"])
-        system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
 
         # Check if running in outbound simulation mode
         is_outbound = request.query.get("outbound") == "1"
@@ -742,6 +741,9 @@ class WebGatewayServer:
                 "phone_number": phone_num,
                 "display_number": phone_num,
             }
+            base_inst = base_inst + dialer.build_outbound_context(outbound_info, language=lang)
+
+        system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
 
         call_type = "outbound_browser" if is_outbound else "browser"
 
