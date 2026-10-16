@@ -949,14 +949,19 @@ class HFPBridge:
             comtypes.CoUninitialize()
 
     def _render_worker(self):
-        """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO)."""
+        """Native WASAPI Render Worker Thread (Speaker playback to phone over Bluetooth SCO).
+        Starts rendering when EITHER the SCO capture is active OR AI audio is pending playback,
+        so the initial AI greeting always reaches the caller even before they speak."""
         comtypes.CoInitialize()
         try:
             while self._wasapi_running:
-                # Wait until capture worker confirms incoming audio packets from SCO
-                # so the render client never locks the Bluetooth endpoint before Transfer to PC!
-                if not self.has_sco_audio:
-                    time.sleep(0.1)
+                # Gate: wait for SCO to be active OR for AI audio to be queued for playback.
+                # NOTE: We must NOT gate on has_sco_audio alone — the AI greeting and responses
+                # must reach the caller even if the caller hasn't spoken yet (has_sco_audio=False).
+                with self._playback_lock:
+                    has_pending_ai = len(self._playback_bytes) > 0
+                if not self.has_sco_audio and not has_pending_ai:
+                    time.sleep(0.05)
                     continue
 
                 client = None
