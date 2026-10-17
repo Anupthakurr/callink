@@ -1581,8 +1581,18 @@ async def run_gemini_bridge(
                             if bridge.playback_started_at is not None
                             else 0.0
                         )
-                        if ai_speaking_sec >= VAD_INITIAL_GRACE_PERIOD:
-                            if latest_rms > vad_threshold:
+                        active_threshold = (
+                            web_server.state.get("vad_threshold", vad_threshold)
+                            if web_server and web_server.state.get("vad_threshold") is not None
+                            else vad_threshold
+                        )
+                        active_grace = (
+                            float(web_server.state.get("barge_in_grace_period", VAD_INITIAL_GRACE_PERIOD))
+                            if web_server and web_server.state.get("barge_in_grace_period") is not None
+                            else VAD_INITIAL_GRACE_PERIOD
+                        )
+                        if ai_speaking_sec >= active_grace:
+                            if latest_rms > active_threshold:
                                 consecutive_speech_chunks += 1
                                 if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
                                     print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")

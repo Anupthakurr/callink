@@ -590,6 +590,7 @@ class WebGatewayServer:
             for k in ["voice_name", "language", "system_instruction", "vad_threshold", "barge_in_grace_period", "auto_launch_browser"]:
                 if k in body:
                     update_data[k] = body[k]
+                    self.state[k] = body[k]
             save_settings(update_data)
             return web.json_response({"success": True, "settings": load_settings()})
         except Exception as e:
