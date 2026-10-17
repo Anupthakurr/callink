@@ -403,11 +403,16 @@ callink/
 │   ├── index.html               # Main dashboard layout & 5 studio suites
 │   ├── styles.css               # Obsidian Glassmorphic 2.0 design system
 │   └── app.js                   # Frontend WebSocket client, Web Audio player & UI logic
-├── gsm_gemini_gateway.py        # Core telephony engine, WinRT call detector & Gemini Live bridge
-├── web_server.py                # Aiohttp server, real-time WebSocket gateway & REST APIs
+├── gsm_gemini_gateway.py        # Core application orchestrator, single instance & standby loop
+├── audio_bridge.py              # Bluetooth SCO audio bridge (WASAPI COM & sounddevice)
+├── gemini_live_bridge.py        # Gemini Live WebSocket streaming, VAD barge-in & session manager
+├── audio_resampler.py           # 16 kHz <-> 24 kHz in-memory continuous rate converter
+├── power_guard.py               # Windows Stay-Awake / Sleep prevention watchdog
+├── phone_audio_silencer.py      # Microsoft Phone Link audio silencer & desktop VoIP detector
 ├── outbound_dialer.py           # Outbound cellular dialing via Phone Link & Android ADB
 ├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
 ├── knowledge_manager.py         # Enterprise document parser (.pdf, .docx, .txt) & prompt injector
+├── web_server.py                # Aiohttp server, real-time WebSocket gateway & REST APIs
 ├── build_exe.bat                # 1-Click PyInstaller compilation script
 ├── Callink.spec                 # PyInstaller standalone executable specification
 ├── run.bat                      # 1-Click Windows environment launcher & auto-setup
@@ -415,13 +420,19 @@ callink/
 ├── .env.example                 # Environment configuration template (GEMINI_API_KEY)
 ├── settings.json                # Persisted persona & VAD configuration (auto-generated)
 ├── recordings/                  # Dual-track stereo WAV call archives & transcripts (auto-generated)
+└── knowledge/                   # Uploaded enterprise grounding documents (auto-generated)
 ```
 
 ### 🗂️ Component & Architecture Responsibilities
 
 | Component / File | Primary Responsibility & Technical Implementation |
 | :--- | :--- |
-| **`gsm_gemini_gateway.py`** | **Core Telephony & Live AI Audio Engine:** Interfaces with Windows Runtime (`PhoneCallManager`) to capture cellular call state changes, establishes bidirectional Bluetooth HFP/SCO audio bridges, manages hardware resampling (16 kHz &harr; 24 kHz), streams raw PCM frames to Google Gemini Live API via WebSocket, performs client-side RMS barge-in speech interruption detection, and manages seamless mid-call reconnection with conversational context memory. |
+| **`gsm_gemini_gateway.py`** | **Master Application Orchestrator:** Manages process single-instance locks, initializes COM and logging, monitors physical cellular call state changes via WinRT (`PhoneCallManager`), and orchestrates the standby and active call lifecycle. |
+| **`audio_bridge.py`** | **Bluetooth SCO Hardware Audio Bridge:** Implements low-level Windows Core Audio (WASAPI) COM interfaces (`IAudioClient`, `IMMDeviceEnumerator`), captures and renders bidirectional 16 kHz 16-bit PCM frames (20ms/320 samples) over Bluetooth Hands-Free Profile, and manages ring buffers. |
+| **`gemini_live_bridge.py`** | **Gemini Live AI WebSocket Pipeline:** Handles real-time bidirectional WebSocket audio streaming to Google's `gemini-3.1-flash-live-preview`, executes 100ms audio frame dispatching, performs client-side RMS speech barge-in interruption detection, and injects conversational history upon mid-call session reconnects. |
+| **`audio_resampler.py`** | **High-Fidelity Audio Resampler:** Performs continuous state-preserved sample rate conversion between 24 kHz (Gemini output) and 16 kHz (Bluetooth telephony) using `audioop.ratecv` with zero clicking or distortion. |
+| **`power_guard.py`** | **Windows Power & Stay-Awake Guard:** Interacts with `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED \| ES_AWAYMODE_REQUIRED`) to keep CPU, network, and Bluetooth endpoints active 24/7 without entering system sleep. |
+| **`phone_audio_silencer.py`** | **Audio Loopback Silencer:** Uses `pycaw` to mute Phone Link's speaker and microphone sessions to prevent acoustic feedback loops, and detects active PC VoIP calls. |
 | **`outbound_dialer.py`** | **Proactive Cellular Outbound Calling:** Dispatches cellular calls via Windows Phone Link protocol (`tel:`) or Android ADB, handles transfer states, and primes Gemini Live with an outbound conversational role and instant proactive greeting trigger. |
 | **`call_recorder.py`** | **Dual-Track Stereo WAV Recorder:** Captures synchronized dual-channel 16 kHz 16-bit audio (Left: Caller mic, Right: AI audio) to disk, generates metadata cards, and saves timestamped conversational dialogue JSON transcripts. |
 | **`knowledge_manager.py`** | **Business Document Grounding:** Extracts text from uploaded files (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`), calculates token budgets, and injects context directly into Gemini Live's system prompt in-memory with zero vector lookup latency. |
