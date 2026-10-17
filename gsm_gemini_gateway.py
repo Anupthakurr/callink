@@ -267,6 +267,7 @@ from audio_bridge import (
     IAudioClient,
     IMMDevice,
     IMMDeviceEnumerator,
+    _last_bth_phone_name,
 )
 from gemini_live_bridge import run_gemini_bridge, GeminiPrewarmer
 
