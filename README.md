@@ -33,16 +33,14 @@ Experience an actual, unedited ~8-minute cellular phone conversation handled aut
 
 <div align="center">
 
-[![Listen to Live Call Audio](https://img.shields.io/badge/▶️_Listen_to_Call_Audio-MP3_(2.8_MB)-brightgreen?style=for-the-badge&logo=google-podcasts)](assets/call_demo_outbound.mp3)
-[![Play Call Video](https://img.shields.io/badge/🎬_Play_Demo_Video-MP4_(5.2_MB)-blue?style=for-the-badge&logo=quicktime)](assets/call_demo_outbound.mp4)
+[![Listen to Live Call Audio](https://img.shields.io/badge/▶️_Listen_to_Call_Audio-MP3_(1.9_MB)-brightgreen?style=for-the-badge&logo=google-podcasts)](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp3)
+[![Play Call Video](https://img.shields.io/badge/🎬_Play_Demo_Video-MP4_(5.2_MB)-blue?style=for-the-badge&logo=quicktime)](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp4)
+
+<br>
+
+> 💡 **Tip:** Click **[▶️ Listen to Call Audio](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp3)** to stream the live call directly in your browser.
 
 </div>
-
-<p align="center">
-  <video src="assets/call_demo_outbound.mp4" controls width="100%">
-    <p>Your browser does not support the video tag. <a href="assets/call_demo_outbound.mp3">Click here to listen to the MP3 directly</a>.</p>
-  </video>
-</p>
 
 
 ---
