@@ -389,8 +389,24 @@ callink/
 ├── .env.example                 # Environment configuration template (GEMINI_API_KEY)
 ├── settings.json                # Persisted persona & VAD configuration (auto-generated)
 ├── recordings/                  # Dual-track stereo WAV call archives & transcripts (auto-generated)
-└── knowledge/                   # Uploaded enterprise grounding documents (auto-generated)
 ```
+
+### 🗂️ Component & Architecture Responsibilities
+
+| Component / File | Primary Responsibility & Technical Implementation |
+| :--- | :--- |
+| **`gsm_gemini_gateway.py`** | **Core Telephony & Live AI Audio Engine:** Interfaces with Windows Runtime (`PhoneCallManager`) to capture cellular call state changes, establishes bidirectional Bluetooth HFP/SCO audio bridges, manages hardware resampling (16 kHz &harr; 24 kHz), streams raw PCM frames to Google Gemini Live API via WebSocket, performs client-side RMS barge-in speech interruption detection, and manages seamless mid-call reconnection with conversational context memory. |
+| **`outbound_dialer.py`** | **Proactive Cellular Outbound Calling:** Dispatches cellular calls via Windows Phone Link protocol (`tel:`) or Android ADB, handles transfer states, and primes Gemini Live with an outbound conversational role and instant proactive greeting trigger. |
+| **`call_recorder.py`** | **Dual-Track Stereo WAV Recorder:** Captures synchronized dual-channel 16 kHz 16-bit audio (Left: Caller mic, Right: AI audio) to disk, generates metadata cards, and saves timestamped conversational dialogue JSON transcripts. |
+| **`knowledge_manager.py`** | **Business Document Grounding:** Extracts text from uploaded files (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`), calculates token budgets, and injects context directly into Gemini Live's system prompt in-memory with zero vector lookup latency. |
+| **`web_server.py`** | **Asynchronous Web Platform & Telemetry Gateway:** High-performance `aiohttp` server hosting the web platform, handling real-time WebSocket streams for live VU meters and speech transcripts, and serving REST APIs for recordings, knowledge files, and AI persona settings. |
+| **`web/`** | **Obsidian Glassmorphic 2.0 Web Dashboard:** Complete frontend studio suite featuring `index.html` (5 studio tabs: Live Gateway, Voice Studio, Recordings, Knowledge Base, AI Persona), `styles.css` (dark-mode glassmorphic design system), and `app.js` (Web Audio API channel isolation, VU meters, and in-browser Voice Studio). |
+| **`run.bat`** | **1-Click Windows Auto-Setup Launcher:** Automatically validates Python 3.9+, initializes virtual environment (`venv`), installs dependencies, prompts for `GEMINI_API_KEY` on first launch, and opens the dashboard. |
+| **`build_exe.bat` & `Callink.spec`** | **Standalone Compilation:** PyInstaller configuration and script to bundle the complete Python runtime, dependencies, and web assets into a zero-dependency standalone `Callink.exe` binary. |
+| **`assets/`** | **Visual Assets & Media Demos:** Stores dashboard UI screenshots, architectural diagrams, and sample streamable call recordings (`call_demo_outbound.mp3`, `call_demo_outbound.mp4`). |
+| **`recordings/`** *(Runtime)* | **Call Archive Storage:** Automatically created directory where synchronized stereo WAV call recordings and JSON transcripts are archived. |
+| **`knowledge/`** *(Runtime)* | **Grounding Documents Store:** Automatically created directory housing uploaded business documents for prompt injection. |
+| **`settings.json`** *(Runtime)* | **Persisted Configuration:** Stores user-configured AI persona, selected voice, barge-in RMS threshold, grace periods, and language defaults. |
 
 ---
 
