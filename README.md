@@ -369,22 +369,27 @@ Callink automatically invokes `SetThreadExecutionState` on startup to keep the P
 
 ```text
 callink/
-├── gsm_gemini_gateway.py        # Core telephony engine, WinRT call detector & Gemini Live bridge
-├── web_server.py                # Aiohttp server, WebSocket gateway & API routes
-├── outbound_dialer.py           # Outbound cellular dialing via Phone Link & ADB
-├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
-├── knowledge_manager.py         # Document parser (.pdf, .docx, .txt) & prompt injector
-├── settings.json                # Persisted user configuration & AI persona settings
-├── build_exe.bat                # 1-Click PyInstaller compilation script
-├── Callink.spec                 # PyInstaller specification for standalone binary
-├── run.bat                      # 1-Click Windows launcher and auto-setup
-├── requirements.txt             # Python package dependencies
+├── assets/                      # Dashboard UI previews, architecture diagrams & audio demos
+│   ├── call_demo_outbound.mp3   # Streamable live call recording demo
+│   ├── call_demo_outbound.mp4   # Embedded video player demo
+│   └── dashboard_*.png          # Obsidian Glassmorphic dashboard screenshots
 ├── web/                         # Modern Obsidian Glassmorphic Web Dashboard
-│   ├── index.html               # Main dashboard layout
+│   ├── index.html               # Main dashboard layout & 5 studio suites
 │   ├── styles.css               # Obsidian Glassmorphic 2.0 design system
-│   └── app.js                  # Frontend WebSocket client, Web Audio player & UI logic
-├── recordings/                  # Automated dual-track stereo WAV call recordings
-└── knowledge/                   # Uploaded enterprise grounding documents
+│   └── app.js                   # Frontend WebSocket client, Web Audio player & UI logic
+├── gsm_gemini_gateway.py        # Core telephony engine, WinRT call detector & Gemini Live bridge
+├── web_server.py                # Aiohttp server, real-time WebSocket gateway & REST APIs
+├── outbound_dialer.py           # Outbound cellular dialing via Phone Link & Android ADB
+├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
+├── knowledge_manager.py         # Enterprise document parser (.pdf, .docx, .txt) & prompt injector
+├── build_exe.bat                # 1-Click PyInstaller compilation script
+├── Callink.spec                 # PyInstaller standalone executable specification
+├── run.bat                      # 1-Click Windows environment launcher & auto-setup
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment configuration template (GEMINI_API_KEY)
+├── settings.json                # Persisted persona & VAD configuration (auto-generated)
+├── recordings/                  # Dual-track stereo WAV call archives & transcripts (auto-generated)
+└── knowledge/                   # Uploaded enterprise grounding documents (auto-generated)
 ```
 
 ---
