@@ -211,7 +211,7 @@ DEFAULT_SETTINGS = {
         "Always respond immediately and concisely to every caller statement or question without robotic phrases or long preambles. "
         "Never say you are an AI or virtual assistant, and never refuse to answer general questions."
     ),
-    "vad_threshold": 3200,
+    "vad_threshold": 950,
     "barge_in_grace_period": 0.35,
     "auto_launch_browser": True
 }
@@ -224,6 +224,8 @@ def load_settings() -> dict:
                 data = json.load(f)
                 merged = dict(DEFAULT_SETTINGS)
                 merged.update(data)
+                if merged.get("vad_threshold", 950) > 1500:
+                    merged["vad_threshold"] = 950
                 return merged
         except Exception:
             pass
@@ -337,7 +339,7 @@ class WebGatewayServer:
         self.state["gemini_model"] = "gemini-3.1-flash-live-preview"
         self.state["voice_name"] = settings.get("voice_name", "Puck")
         self.state["language"] = settings.get("language", "auto")
-        self.state["vad_threshold"] = settings.get("vad_threshold", 3600)
+        self.state["vad_threshold"] = settings.get("vad_threshold", 950)
         self.state["audio_sample_rate"] = 16000
         self.state["audio_format"] = "16 kHz 16-Bit PCM Mono SCO"
         self.state["recording_mode"] = "Synchronized Stereo WAV (L: Caller | R: AI)"

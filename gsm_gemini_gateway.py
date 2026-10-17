@@ -391,9 +391,9 @@ GEMINI_OUT_RATE = 24000
 GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 
 # Barge-in VAD parameters (for client-side speech detection while AI is playing)
-VAD_RMS_THRESHOLD = 4200
-VAD_TRIGGER_CONSECUTIVE = 8       # ~160ms of sustained speech above threshold
-VAD_INITIAL_GRACE_PERIOD = 0.60   # 600ms grace period after AI speech starts before client barge-in triggers
+VAD_RMS_THRESHOLD = 950
+VAD_TRIGGER_CONSECUTIVE = 2       # ~40ms of sustained speech above threshold
+VAD_INITIAL_GRACE_PERIOD = 0.20   # 200ms grace period after AI speech starts before client barge-in triggers
 
 
 # ==============================================================================
@@ -1358,6 +1358,8 @@ async def run_gemini_bridge(
         base_inst = base_inst + dialer.build_outbound_context(outbound_info, language=lang)
     system_instruction = km.get_effective_system_instruction(base_inst, language=lang)
     vad_threshold = settings.get("vad_threshold", VAD_RMS_THRESHOLD)
+    if vad_threshold > 1500:
+        vad_threshold = 950
 
     client = genai.Client(api_key=api_key)
 
@@ -1510,6 +1512,9 @@ async def run_gemini_bridge(
                 zero_chunks = 0
                 last_report = time.time()
                 latest_rms = 0
+                send_buffer = bytearray()
+                last_send_time = time.time()
+                CHUNK_DISPATCH_BYTES = 3200  # 100ms of 16kHz 16-bit mono PCM (1600 samples)
 
                 while not stop_event.is_set() and not session_stop_event.is_set():
                     now = time.time()
@@ -1626,19 +1631,37 @@ async def run_gemini_bridge(
                         # Legitimate caller speech (even quiet speech > 50 RMS) streams cleanly to Gemini Live.
                         audio_to_send = b"\x00" * len(pcm16)
 
+                    send_buffer.extend(audio_to_send)
+                    now_time = time.time()
+                    if len(send_buffer) >= CHUNK_DISPATCH_BYTES or (now_time - last_send_time >= 0.10 and len(send_buffer) > 0):
+                        to_dispatch = bytes(send_buffer)
+                        send_buffer.clear()
+                        last_send_time = now_time
+                        try:
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=to_dispatch,
+                                    mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                                )
+                            )
+                            sent_chunks += 1
+                        except Exception as e:
+                            if not stop_event.is_set() and not session_stop_event.is_set():
+                                print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
+                            session_stop_event.set()
+                            break
+
+                if len(send_buffer) > 0 and not session_stop_event.is_set():
                     try:
                         await session.send_realtime_input(
                             audio=types.Blob(
-                                data=audio_to_send,
+                                data=bytes(send_buffer),
                                 mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
                             )
                         )
-                        sent_chunks += 1
-                    except Exception as e:
-                        if not stop_event.is_set() and not session_stop_event.is_set():
-                            print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
-                        session_stop_event.set()
-                        break
+                    except Exception:
+                        pass
+                    send_buffer.clear()
 
             async def receiver():
                 """Pull Gemini's spoken response, resample, push to jitter buffer, and stream transcripts."""
@@ -1805,6 +1828,55 @@ async def run_gemini_bridge(
                         break
 
         try:
+            # Build appropriate session configuration: initial prompt vs conversational reconnect
+            if is_initial_connect:
+                current_config = config
+            else:
+                print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session with conversational memory...")
+                recent_lines = []
+                if recorder and recorder.transcripts:
+                    for t in recorder.transcripts[-8:]:
+                        role_str = "Caller" if t.get("role") in ("caller", "user") else "Representative (You)"
+                        txt = (t.get("text") or "").strip()
+                        if txt:
+                            recent_lines.append(f"{role_str}: {txt}")
+                history_text = "\n".join(recent_lines) if recent_lines else "The conversation has been active for several minutes."
+
+                contact_name = (outbound_info.get("contact_name") if outbound_info else None) or "the customer"
+
+                reconnect_inst = (
+                    f"{system_instruction}\n\n"
+                    f"[CRITICAL: MID-CALL RECONNECTION DIRECTIVE - DO NOT RE-GREET]\n"
+                    f"This phone call with {contact_name} is ALREADY IN PROGRESS and active.\n"
+                    f"You have already greeted the customer and have been conversing for several minutes.\n"
+                    f"STRICT RULES FOR THIS RECONNECTION:\n"
+                    f"1. NEVER re-greet the caller. DO NOT say 'Hello', 'Namaste', 'Kaise hain', or re-introduce yourself or your company name.\n"
+                    f"2. DO NOT ask 'is this a good time to speak' or restart the pitch.\n"
+                    f"3. Recent dialogue before reconnection:\n"
+                    f"--- CONVERSATION HISTORY ---\n"
+                    f"{history_text}\n"
+                    f"--- END HISTORY ---\n"
+                    f"4. Seamlessly continue the conversation right where it left off. Respond directly, concisely (1-2 sentences), and naturally to whatever the caller says next."
+                )
+                current_config = types.LiveConnectConfig(
+                    response_modalities=["AUDIO"],
+                    system_instruction=reconnect_inst,
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                        )
+                    ),
+                    realtime_input_config=types.RealtimeInputConfig(
+                        automatic_activity_detection=types.AutomaticActivityDetection(
+                            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                            silence_duration_ms=450,
+                            prefix_padding_ms=100,
+                        )
+                    ),
+                    input_audio_transcription=types.AudioTranscriptionConfig(),
+                    output_audio_transcription=types.AudioTranscriptionConfig(),
+                )
+
             if active_session:
                 try:
                     await _run_session_pipeline(active_session)
@@ -1812,15 +1884,13 @@ async def run_gemini_bridge(
                     print(f"[Gateway] Pre-warmed session ended/failed ({e}). Connecting fresh Gemini Live session...")
                     active_session = None
                     if not stop_event.is_set():
-                        async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as fresh_session:
+                        async with client.aio.live.connect(model=GEMINI_MODEL, config=current_config) as fresh_session:
                             await _run_session_pipeline(fresh_session)
             else:
                 if is_initial_connect:
                     print("Connecting to Gemini Live API...")
-                else:
-                    print("\n[Gateway] Mid-call reconnect: Connecting fresh Gemini Live session...")
 
-                async with client.aio.live.connect(model=GEMINI_MODEL, config=config) as fresh_session:
+                async with client.aio.live.connect(model=GEMINI_MODEL, config=current_config) as fresh_session:
                     await _run_session_pipeline(fresh_session)
 
         except Exception as e:
