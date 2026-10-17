@@ -31,14 +31,14 @@ Experience an actual, unedited ~8-minute cellular phone conversation handled aut
 > - **Language:** Hindi & Natural Hinglish dialogue
 > - **Latency & Audio:** Direct Bluetooth SCO bridge (~800ms turn-around latency)
 
-<div align="center">
-
-[![Listen to Live Call Audio](https://img.shields.io/badge/▶️_Listen_to_Call_Audio-MP3_(1.9_MB)-brightgreen?style=for-the-badge&logo=google-podcasts)](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp3)
-[![Play Call Video](https://img.shields.io/badge/🎬_Play_Demo_Video-MP4_(4.4_MB)-blue?style=for-the-badge&logo=quicktime)](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp4)
+https://github.com/user-attachments/assets/7e4e574b-712d-4961-aad7-a972e3ad5125
 
 <br>
 
-> 💡 **Tip:** Click **[▶️ Listen to Call Audio](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp3)** to stream the live call directly in your browser.
+<div align="center">
+
+[![Listen to Live Call Audio](https://img.shields.io/badge/▶️_Play_Call_Demo-Live_Audio_Stream-brightgreen?style=for-the-badge&logo=google-podcasts)](https://github.com/user-attachments/assets/7e4e574b-712d-4961-aad7-a972e3ad5125)
+[![Download Audio File](https://img.shields.io/badge/🎧_Download_Audio-MP3_(1.9_MB)-blue?style=for-the-badge)](https://github.com/Anupthakurr/callink/raw/main/assets/call_demo_outbound.mp3)
 
 </div>
 
