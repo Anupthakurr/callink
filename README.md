@@ -327,14 +327,15 @@ The resulting binary will be generated in `dist\Callink.exe`. It can be run on a
 - During phone calls, audio is routed bidirectionally between your phone's cellular baseband modem and your PC's Bluetooth Hands-Free device (`Hands-Free HF Audio`).
 - If you want to listen to live calls without disturbing the caller, use headphones or adjust device volume in Windows Sound Settings to prevent acoustic feedback loop into the microphone.
 
-### 3. Tuning Conversational Barge-In
-If callers report that the AI stops speaking too easily or fails to stop when interrupted:
-- Open the dashboard at `http://localhost:5000` &rarr; **AI Persona** tab.
-- **VAD RMS Threshold:**
-  - Increase (e.g. `3800 – 4200`) if background noise or breath causes accidental interruptions.
-  - Decrease (e.g. `2400 – 3000`) if the caller has a quiet voice or weak cellular signal.
-- **Barge-In Grace Period:**
-  - Increase (e.g. `0.45s`) to give the AI a brief window to start speaking before interruptions can trigger.
+### 3. Tuning Conversational Barge-In (Interruption Sensitivity)
+Barge-in allows callers to naturally interrupt the AI mid-sentence. If callers report that the AI stops speaking too easily (false interruptions) or fails to stop when spoken over:
+- Open the dashboard at `http://localhost:5000` &rarr; **⚙️ AI Persona & Settings** tab.
+- **Barge-In Sensitivity (RMS Threshold):**
+  - **Default:** `950 RMS` (calibrated sweet spot for standard Bluetooth SCO cellular calls).
+  - **Lower values (`600 – 850 RMS`):** Higher sensitivity. The AI yields immediately even to quiet murmurs, soft "yes" / "wait", or whispers. (Best for quiet rooms).
+  - **Higher values (`1,200 – 1,800+ RMS`):** Lower sensitivity / noise-resistant. Prevents false interruptions from loud background traffic, fans, or breathing. (Best for noisy environments).
+- **Barge-In Grace Period (`0.10s – 0.50s`):**
+  - Defines the initial delay after the AI starts speaking before caller interruptions are allowed, preventing acoustic echo or the AI's own audio loopback from self-triggering an interruption.
 
 ### 4. Preventing Windows Sleep During Standby
 Callink automatically invokes `SetThreadExecutionState` on startup to keep the PC active while waiting for cellular calls. If using a laptop on battery, ensure Windows Power & Battery settings allow background network activity when the lid is closed.
