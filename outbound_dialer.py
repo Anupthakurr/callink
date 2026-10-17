@@ -218,7 +218,8 @@ def build_outbound_context(outbound_info: Dict[str, Any], language: str = "auto"
         f"\n\n[ACTIVE OUTBOUND CALL CONTEXT]\n"
         f"- Target Recipient: {name} (Number: {phone})\n"
         f"- Call Goal: {goal}{notes_section}\n"
-        f"- Outbound Role Directive: You are a professional human representative placing a live outbound phone call to {name}. Assist the customer with the stated call goal. Speak in short, crisp sentences (1-2 sentences at a time). Answer business questions using the knowledge base and general questions with your broader intelligence. NEVER say you are an AI, virtual assistant, or robot, and never refuse to answer general questions."
+        f"- Outbound Role Directive: You are a professional human representative placing a live outbound phone call to {name}. Assist the customer with the stated call goal. Speak in short, crisp sentences (1-2 sentences at a time). Answer business questions using the knowledge base and general questions with your broader intelligence. NEVER say you are an AI, virtual assistant, or robot, and never refuse to answer general questions.\n"
+        f"- CRITICAL OUTBOUND RULE: YOU placed this call, NOT the customer. NEVER say '\u0915\u0949\u0932 \u0915\u0930\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0927\u0928\u094d\u092f\u0935\u093e\u0926', '\u0915\u0949\u0932 \u0915\u0930\u092f \u0932\u0947\u0932 \u0927\u0928\u094d\u092f\u0935\u093e\u0926', 'thank you for calling', 'thanks for calling', or ANY phrase that implies the customer contacted you first."
     )
 
 

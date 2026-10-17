@@ -1479,11 +1479,11 @@ async def run_gemini_bridge(
                     else:
                         print("[Gateway] Requesting immediate inbound AI greeting...")
                         if lang in ("hi", "auto"):
-                            greeting_turn = "[कॉल कनेक्ट हो गया है। तुरंत बोलें: 'नमस्ते! कॉल करने के लिए धन्यवाद, बताइए मैं आपकी क्या सहायता कर सकता हूँ?']"
+                            greeting_turn = "[इनकमिंग कॉल कनेक्ट हो गया है। तुरंत बोलें: 'नमस्ते! बताइए, मैं आपकी क्या सहायता कर सकता हूँ?' — कभी भी 'कॉल करने के लिए धन्यवाद' न कहें।]"
                         elif lang == "mai":
-                            greeting_turn = "[कॉल कनेक्ट भऽ गेल। तुरंत बोलू: 'प्रणाम! कॉल करय लेल धन्यवाद, कहू हम अहाँक की मद्द कऽ सकैत छी?']"
+                            greeting_turn = "[इनकमिंग कॉल कनेक्ट भऽ गेल। तुरंत बोलू: 'प्रणाम! कहू, हम अहाँक की मद्द कऽ सकैत छी?' — कखनो 'कॉल करय लेल धन्यवाद' नहि कहब।]"
                         else:
-                            greeting_turn = "[Call connected. Immediately say: 'Hello! Thanks for calling, how can I help you today?']"
+                            greeting_turn = "[Incoming call connected. Immediately say: 'Hello! How can I help you today?' — NEVER say 'thanks for calling'.]" 
                     is_initial_greeting_active = True
                     await session.send_client_content(
                         turns=types.Content(
@@ -1844,6 +1844,12 @@ async def run_gemini_bridge(
 
                 contact_name = (outbound_info.get("contact_name") if outbound_info else None) or "the customer"
 
+                is_outbound_reconnect = bool(outbound_info)
+                outbound_ban = (
+                    "5. CRITICAL OUTBOUND RULE: This is an OUTBOUND call — YOU placed this call. "
+                    "NEVER say 'कॉल करने के लिए धन्यवाद', 'कॉल करय लेल धन्यवाद', 'thank you for calling', "
+                    "or any similar phrase implying the customer called you. You called them.\n"
+                ) if is_outbound_reconnect else ""
                 reconnect_inst = (
                     f"{system_instruction}\n\n"
                     f"[CRITICAL: MID-CALL RECONNECTION DIRECTIVE - DO NOT RE-GREET]\n"
@@ -1856,7 +1862,8 @@ async def run_gemini_bridge(
                     f"--- CONVERSATION HISTORY ---\n"
                     f"{history_text}\n"
                     f"--- END HISTORY ---\n"
-                    f"4. Seamlessly continue the conversation right where it left off. Respond directly, concisely (1-2 sentences), and naturally to whatever the caller says next."
+                    f"4. Seamlessly continue the conversation right where it left off. Respond directly, concisely (1-2 sentences), and naturally to whatever the caller says next.\n"
+                    f"{outbound_ban}"
                 )
                 current_config = types.LiveConnectConfig(
                     response_modalities=["AUDIO"],
