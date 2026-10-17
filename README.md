@@ -445,6 +445,35 @@ callink/
 | **`knowledge/`** *(Runtime)* | **Grounding Documents Store:** Automatically created directory housing uploaded business documents for prompt injection. |
 | **`settings.json`** *(Runtime)* | **Persisted Configuration:** Stores user-configured AI persona, selected voice, barge-in RMS threshold, grace periods, and language defaults. |
 
+### 📖 Developer Study Guide & Reading Roadmap
+
+To quickly master the architecture and inner mechanics of Callink, study the codebase in this recommended **5-stage roadmap**:
+
+1. **Start with the AI Brain & Audio Streaming (`gemini_live_bridge.py`)** ⭐ *(Most Important)*:
+   - Study `run_gemini_bridge()`: How the live bidirectional WebSocket connects to Google's multimodal Gemini Live API.
+   - Study `sender()`: Capturing 20ms caller audio frames, 100ms frame batching (`CHUNK_DISPATCH_BYTES = 3200`), and client-side RMS Barge-In interruption logic.
+   - Study `receiver()`: Playing synthesized 24 kHz Gemini audio into the cellular call and handling mid-call reconnects with dialogue history injection.
+   - Study `GeminiPrewarmer`: Pre-warming WebSocket sessions during phone ringing for zero-latency pickup.
+
+2. **Understand the Master Orchestrator (`gsm_gemini_gateway.py`)**:
+   - Study `main_async()`: The infinite standby monitoring loop waiting for physical cellular calls or dashboard dials.
+   - Study `watch_call_and_hfp()`: Monitoring cellular call lifecycle, connection health, and remote hangup events.
+   - Study how WinRT (`PhoneCallManager`) detects incoming/active GSM calls with zero polling delay.
+
+3. **Explore Hardware Telephony Audio (`audio_bridge.py`)**:
+   - Study `HFPBridge`: How Windows WASAPI COM interfaces (`IAudioClient`, `IMMDeviceEnumerator`) stream bidirectional 16 kHz 16-bit PCM audio over Bluetooth Hands-Free Profile.
+   - Study `find_hfp_devices()`: Auto-discovering and pairing smartphone Bluetooth audio endpoints.
+
+4. **Learn Dialing, Recording & Knowledge Grounding**:
+   - **`outbound_dialer.py`**: How Windows `tel:` protocol & Android ADB dial out, and how proactive opening pitches are primed.
+   - **`call_recorder.py`**: How synchronized Left (Caller) and Right (AI) audio are written simultaneously to dual-track stereo WAV & timestamped JSON transcripts.
+   - **`knowledge_manager.py`**: How PDF, DOCX, and TXT documents are extracted and injected into Gemini Live's system prompt in-memory (0ms RAG latency).
+
+5. **Examine the Helper Subsystems**:
+   - **`audio_resampler.py`**: High-fidelity continuous 24 kHz &harr; 16 kHz rate conversion using `audioop.ratecv`.
+   - **`power_guard.py`**: Keeping Windows awake 24/7 via `kernel32.SetThreadExecutionState`.
+   - **`phone_audio_silencer.py`**: Muting Phone Link's PC soundcard sessions to prevent audio loopback and acoustic feedback.
+
 ---
 
 ## 📄 License
