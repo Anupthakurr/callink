@@ -62,53 +62,79 @@ The result is a conversational turn-around latency of **~800ms to 1.2s**, comple
 ## 🏛️ Architecture & Telephony Pipeline
 
 ```text
-                      +-----------------------------+
-                      |   Standard Cellular Phone   |
-                      |     Caller / PSTN / GSM     |
-                      +--------------+--------------+
-                                     |
-                                     v (Cellular Carrier Network)
-                      +-----------------------------+
-                      |   Android Mobile Phone      |
-                      |   with "Link to Windows"    |
-                      +--------------+--------------+
-                                     |
-                                     | Bluetooth HFP / SCO Audio Link
-                                     | (16 kHz 16-Bit PCM Bidirectional)
-                                     v
-       +-------------------------------------------------------------+
-       |                  Windows PC Gateway Host                    |
-       |                                                             |
-       |  1. Windows Runtime Telephony Detector (WinRT)              |
-       |     - PhoneCallManager hooks cellular call state changes    |
-       |     - Zero polling overhead; instant pickup & hangup events |
-       |                                                             |
-       |  2. Bluetooth SCO Audio Bridge (sounddevice)                |
-       |     - Continuous 20ms frame streaming (320 samples @ 16kHz) |
-       |     - 120ms Dynamic SCO Jitter Buffer                       |
-       |                                                             |
-       |  3. Hardware-Calibrated VAD & Barge-In Engine               |
-       |     - Client-side RMS speech energy threshold               |
-       |     - Instant local playback queue flushing on interrupt   |
-       |                                                             |
-       |  4. In-Memory Resampler (audioop / scipy)                   |
-       |     - 16 kHz Bluetooth PCM <---> 24 kHz Gemini Live PCM     |
-       |                                                             |
-       |  5. Dual-Track Synchronized Call Recorder                   |
-       |     - Left Channel: Clean Caller Voice                      |
-       |     - Right Channel: Gemini AI Voice                        |
-       |                                                             |
-       |  6. Stay-Awake Guard (Win32 kernel32)                       |
-       |     - ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED             |
-       +-----------------------------+-------------------------------+
-                                     |
-                                     | Bidirectional Secure WebSocket
-                                     | (Raw Audio PCM Chunks)
-                                     v
-                      +-----------------------------+
-                      |   Google Gemini Live API    |
-                      |   gemini-3.1-flash-live     |
-                      +-----------------------------+
+  +---------------------------------------------------------------------------------------+
+  |                               CELLULAR TELEPHONY LAYER                                |
+  |                                                                                       |
+  |   +-----------------------+              (GSM / VoLTE Carrier Network)                |
+  |   | Standard Mobile Phone | <======================================================>  |
+  |   | Caller / Recipient    |                                                         | |
+  |   +-----------------------+                                                         | |
+  |                                                                                     | |
+  |                                                                                     v |
+  |                                                    +--------------------------------+ |
+  |                                                    |     Android Smartphone         | |
+  |                                                    |   with "Link to Windows"       | |
+  |                                                    +----------------+---------------+ |
+  +---------------------------------------------------------------------|-----------------+
+                                                                        |
+                                         Bluetooth HFP / SCO Audio Link | (16 kHz 16-Bit PCM Bidirectional)
+                                         & Phone Link Protocol (tel:)   |
+                                                                        v
+  +---------------------------------------------------------------------------------------+
+  |                          WINDOWS PC GATEWAY HOST (Callink Engine)                     |
+  |                                                                                       |
+  |   +------------------------------------+    +-------------------------------------+   |
+  |   | 1. WinRT Telephony Detector        |    | 2. Proactive Outbound Dialer        |   |
+  |   |    PhoneCallManager zero-polling   |    |    Phone Link (tel:) & ADB dialer   |   |
+  |   |    automatic call pickup & hangup  |    |    Auto-greeting priming engine     |   |
+  |   +-----------------+------------------+    +------------------+------------------+   |
+  |                     |                                          |                      |
+  |                     +--------------------+---------------------+                      |
+  |                                          |                                            |
+  |   +--------------------------------------v----------------------------------------+   |
+  |   | 3. Bluetooth SCO Audio Bridge (WASAPI / sounddevice)                          |   |
+  |   |    • 20ms hardware audio sampling @ 16 kHz 16-bit mono PCM                   |   |
+  |   |    • 120ms dynamic SCO jitter buffer & 100ms WebSocket frame batcher          |   |
+  |   +--------------------------------------+----------------------------------------+   |
+  |                                          |                                            |
+  |   +--------------------------------------v----------------------------------------+   |
+  |   | 4. Hardware-Calibrated VAD & Live Dynamic Barge-In Engine                     |   |
+  |   |    • Client-side RMS threshold (Default 950 RMS, real-time live adjustable)   |   |
+  |   |    • Instant playback queue flush & interrupted turn transcript logger        |   |
+  |   +--------------------------------------+----------------------------------------+   |
+  |                                          |                                            |
+  |   +--------------------------------------v----------------------------------------+   |
+  |   | 5. Synchronized Dual-Track Call Recorder & Resampler (audioop / scipy)        |   |
+  |   |    • Left: Clean Caller Voice (16kHz) | Right: Gemini AI Voice (16kHz)        |   |
+  |   |    • High-fidelity 16 kHz <---> 24 kHz in-memory resampler                    |   |
+  |   +--------------------------------------+----------------------------------------+   |
+  |                                          |                                            |
+  |                     +--------------------+--------------------+                       |
+  |                     |                                         |                       |
+  |                     v                                         v                       |
+  |   +------------------------------------+    +-------------------------------------+   |
+  |   | 6. Knowledge Grounding Engine      |    | 7. aiohttp Web Platform & Telemetry |   |
+  |   |    In-memory document parser       |    |    Live WebSocket VU meters (L/R)   |   |
+  |   |    Zero-latency prompt grounding   |    |    Dual-track player & REST APIs    |   |
+  |   +-----------------+------------------+    +------------------+------------------+   |
+  |                     |                                          |                      |
+  |                     |                                          | HTTP / WebSockets    |
+  |                     |                                          v                      |
+  |                     |                       +-------------------------------------+   |
+  |                     |                       | Obsidian Glassmorphic Web Dashboard |   |
+  |                     |                       | (http://localhost:5000)             |   |
+  |                     |                       +-------------------------------------+   |
+  +---------------------|-----------------------------------------------------------------+
+                        |
+                        | Bidirectional Secure WebSocket (gemini-3.1-flash-live-preview)
+                        v
+  +---------------------------------------------------------------------------------------+
+  |                              GOOGLE GEMINI LIVE CLOUD                                 |
+  |                                                                                       |
+  |   • Native Multimodal Speech-to-Speech Engine (Audio In <---> Audio Out)              |
+  |   • Real-Time Multilingual Code-Switching (Hindi, English, Hinglish, Maithili, etc.)  |
+  |   • Zero-STT / Zero-TTS Architecture (~800ms ultra-low turnaround latency)            |
+  +---------------------------------------------------------------------------------------+
 ```
 
 ---
