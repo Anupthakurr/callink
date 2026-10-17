@@ -11,13 +11,38 @@
 
 **A high-performance Windows telephony gateway bridging standard cellular telephone calls directly to Google's multimodal Gemini Live API (`gemini-3.1-flash-live-preview`) over Bluetooth Hands-Free Profile (HFP).**
 
-[Features](#-key-features) • [Architecture](#-architecture--telephony-pipeline) • [Latency Benchmark](#-latency-benchmark-callink-vs-legacy-telephony) • [Quickstart](#-quickstart-1-click-on-windows) • [Dashboard Overview](#-glassmorphic-web-dashboard) • [Troubleshooting](#-troubleshooting--audio-tuning)
+[Features](#-key-features) • [Live Call Demo](#-real-world-live-call-recording-demo) • [Architecture](#-architecture--telephony-pipeline) • [Latency Benchmark](#-latency-benchmark-callink-vs-legacy-telephony) • [Quickstart](#-quickstart-1-click-on-windows) • [Dashboard Overview](#-glassmorphic-web-dashboard) • [Troubleshooting](#-troubleshooting--audio-tuning)
 
 <br><br>
 
 <img src="assets/dashboard_outbound_dialer.png" alt="Callink Obsidian Glassmorphic Dashboard Preview" width="100%" />
 
 </div>
+
+---
+
+## 🎙️ Real-World Live Call Recording Demo
+
+Experience an actual, unedited ~8-minute cellular phone conversation handled autonomously by Callink and Google's multimodal Gemini Live voice model (`gemini-3.1-flash-live-preview`).
+
+> **Call Highlights:**
+> - **Call Direction:** Autonomous Outbound Cellular Call (placed via Android SIM)
+> - **Duration:** 8 minutes 23 seconds
+> - **Language:** Hindi & Natural Hinglish dialogue
+> - **Latency & Audio:** Direct Bluetooth SCO bridge (~800ms turn-around latency)
+
+<div align="center">
+
+[![Listen to Live Call Audio](https://img.shields.io/badge/▶️_Listen_to_Call_Audio-MP3_(2.8_MB)-brightgreen?style=for-the-badge&logo=google-podcasts)](assets/call_demo_outbound.mp3)
+[![Play Call Video](https://img.shields.io/badge/🎬_Play_Demo_Video-MP4_(5.2_MB)-blue?style=for-the-badge&logo=quicktime)](assets/call_demo_outbound.mp4)
+
+</div>
+
+<p align="center">
+  <video src="assets/call_demo_outbound.mp4" controls width="100%">
+    <p>Your browser does not support the video tag. <a href="assets/call_demo_outbound.mp3">Click here to listen to the MP3 directly</a>.</p>
+  </video>
+</p>
 
 
 ---
