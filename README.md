@@ -377,14 +377,64 @@ The resulting binary will be generated in `dist\Callink.exe`. It can be run on a
 - If you want to listen to live calls without disturbing the caller, use headphones or adjust device volume in Windows Sound Settings to prevent acoustic feedback loop into the microphone.
 
 ### 3. Tuning Conversational Barge-In (Interruption Sensitivity)
-Barge-in allows callers to naturally interrupt the AI mid-sentence. If callers report that the AI stops speaking too easily (false interruptions) or fails to stop when spoken over:
-- Open the dashboard at `http://localhost:5000` &rarr; **⚙️ AI Persona & Settings** tab.
-- **Barge-In Sensitivity (RMS Threshold):**
-  - **Default:** `950 RMS` (calibrated sweet spot for standard Bluetooth SCO cellular calls).
-  - **Lower values (`600 – 850 RMS`):** Higher sensitivity. The AI yields immediately even to quiet murmurs, soft "yes" / "wait", or whispers. (Best for quiet rooms).
-  - **Higher values (`1,200 – 1,800+ RMS`):** Lower sensitivity / noise-resistant. Prevents false interruptions from loud background traffic, fans, or breathing. (Best for noisy environments).
-- **Barge-In Grace Period (`0.10s – 0.50s`):**
-  - Defines the initial delay after the AI starts speaking before caller interruptions are allowed, preventing acoustic echo or the AI's own audio loopback from self-triggering an interruption.
+
+**Barge-In** is the mechanism that allows callers to naturally interrupt the AI agent mid-sentence - just like a real human conversation. When the caller speaks while the AI is talking, Callink instantly detects the caller's voice and stops AI playback so the caller can be heard.
+
+Open the dashboard at `http://localhost:5000` => **AI Persona & Settings** tab to configure.
+
+---
+
+#### Barge-In Sensitivity (RMS Threshold) - What It Does
+
+The **RMS Threshold** is the loudness level that a caller's voice must exceed before Callink registers it as a genuine interruption and stops the AI.
+
+| Slider Position | RMS Value | Behavior | Best For |
+|:---|:---|:---|:---|
+| **Low** | `600 - 1,500` | **Highly sensitive** - AI stops even on soft murmurs, whispers, or a quiet hmm | Silent/quiet indoor rooms |
+| **Medium (Default)** | `2,500 - 3,600` | **Balanced** - Triggers on normal conversational voice, ignores background hiss | Standard calls (recommended) |
+| **High** | `5,000 - 6,000` | **Noise-resistant** - Only very loud, clear speech triggers interruption | Outdoor / noisy environments |
+
+> **Recommended: Keep slider LOW at 2,500-3,000 RMS**
+>
+> For outbound cellular calls over Bluetooth HFP, the caller's voice typically sits in the **200-1,500 RMS** range.
+> - Too **high** (5,000+): Caller's normal voice never triggers barge-in => AI keeps talking **over** the caller.
+> - Too **low** (< 1,000): Bluetooth SCO background hiss or carrier tones may falsely interrupt the AI.
+>
+> **Start at `2,500 RMS` and increase by 500 if you experience false interruptions.**
+
+---
+
+#### Quick Reference by Environment
+
+| Environment | Recommended RMS |
+|:---|:---:|
+| Quiet room / indoors | **2,000 - 3,000** |
+| Office with background chatter | **3,000 - 4,000** |
+| Outdoor / street noise | **4,000 - 5,000** |
+| Very loud environment (traffic, construction) | **5,000 - 6,000** |
+
+---
+
+#### Barge-In Grace Period (`0.10s - 0.50s`)
+
+Defines the initial delay after the AI **starts speaking** before caller interruptions are processed.
+
+- **Purpose:** Prevents the AI's own synthesized voice from acoustically looping back through the Bluetooth mic and self-triggering a false interruption at the very start of speaking.
+- **Short Grace (`0.10s`):** Interruption is allowed almost immediately. Caller can cut in very early.
+- **Long Grace (`0.50s`):** AI gets a 500ms protected window to begin speaking before barge-in activates.
+- **Recommended:** `0.20s` (200ms) - prevents echo self-triggers while still feeling highly responsive.
+
+---
+
+#### How Barge-In Works Internally
+
+Barge-In uses a **dual-detection system** (client-side + server-side):
+
+1. **Client-Side RMS Detection** (`gemini_live_bridge.py` => `sender()`):
+   Every 20ms audio frame from the Bluetooth mic is measured for loudness (RMS). If `caller_rms > vad_threshold` for **2 consecutive frames (~40ms)** => `bridge.clear_playback()` is called, draining the AI audio buffer and stopping playback instantly.
+
+2. **Server-Side Interruption** (Gemini Live API):
+   Gemini Live's built-in VAD (`END_SENSITIVITY_HIGH`) also detects caller speech server-side and signals `server_content.interrupted = True`, providing a secondary safety net.
 
 ### 4. Preventing Windows Sleep During Standby
 Callink automatically invokes `SetThreadExecutionState` on startup to keep the PC active while waiting for cellular calls. If using a laptop on battery, ensure Windows Power & Battery settings allow background network activity when the lid is closed.
