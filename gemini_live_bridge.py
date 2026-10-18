@@ -1,6 +1,7 @@
 import asyncio
 import audioop
 import os
+import queue
 import time
 import traceback
 from google import genai
@@ -291,162 +292,166 @@ async def run_gemini_bridge(
                 last_send_time = time.time()
                 CHUNK_DISPATCH_BYTES = 3200  # 100ms of 16kHz 16-bit mono PCM (1600 samples)
 
-                while not stop_event.is_set() and not session_stop_event.is_set():
-                    now = time.time()
-                    if now - last_report >= 2.0:
-                        last_report = now
-                        if sent_chunks > 0:
+                try:
+                    while not stop_event.is_set() and not session_stop_event.is_set():
+                        now = time.time()
+                        if now - last_report >= 2.0:
+                            last_report = now
                             ai_status = "AI Speaking (echo muted)" if bridge.has_pending_playback() else "Line Open"
                             print(f"[Audio Link] 🎙️ Caller Audio: RMS={latest_rms} | Streamed: {sent_chunks} chunks to Gemini Live ({ai_status})")
-                        elif bridge.total_input_frames == 0:
-                            print("[Audio Link] ⏳ Call connected on PC — waiting for caller voice...")
 
-                    try:
-                        pcm16 = bridge.to_ai.get_nowait()
-                    except queue.Empty:
-                        await asyncio.sleep(0.005)
-                        continue
-                    except Exception:
-                        continue
-
-                    latest_rms = audioop.rms(pcm16, 2)
-
-                    # Pull sequential synchronized AI audio chunk from playback queue
-                    # Keep queue buffer synchronized (<100ms cushion) without clock drift
-                    while bridge.ai_record_queue.qsize() > 5:
                         try:
-                            discard = bridge.ai_record_queue.get_nowait()
-                            # If non-silent speech, prioritize it so it isn't discarded
-                            if any(discard):
-                                current_ai_chunk = discard
-                                break
-                        except Exception:
-                            break
-                    else:
-                        try:
-                            current_ai_chunk = bridge.ai_record_queue.get_nowait()
+                            pcm16 = bridge.to_ai.get_nowait()
                         except queue.Empty:
-                            current_ai_chunk = b"\x00" * len(pcm16)
+                            await asyncio.sleep(0.005)
+                            continue
+                        except Exception:
+                            continue
 
-                    # Ensure exact sample matching
-                    if len(current_ai_chunk) != len(pcm16):
-                        if len(current_ai_chunk) > len(pcm16):
-                            current_ai_chunk = current_ai_chunk[:len(pcm16)]
+                        latest_rms = audioop.rms(pcm16, 2)
+
+                        # Pull sequential synchronized AI audio chunk from playback queue
+                        # Keep queue buffer synchronized (<100ms cushion) without clock drift
+                        while bridge.ai_record_queue.qsize() > 5:
+                            try:
+                                discard = bridge.ai_record_queue.get_nowait()
+                                # If non-silent speech, prioritize it so it isn't discarded
+                                if any(discard):
+                                    current_ai_chunk = discard
+                                    break
+                            except Exception:
+                                break
                         else:
-                            current_ai_chunk = current_ai_chunk + b"\x00" * (len(pcm16) - len(current_ai_chunk))
+                            try:
+                                current_ai_chunk = bridge.ai_record_queue.get_nowait()
+                            except queue.Empty:
+                                current_ai_chunk = b"\x00" * len(pcm16)
 
-                    bridge.last_played_chunk = current_ai_chunk
-                    ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
+                        # Ensure exact sample matching
+                        if len(current_ai_chunk) != len(pcm16):
+                            if len(current_ai_chunk) > len(pcm16):
+                                current_ai_chunk = current_ai_chunk[:len(pcm16)]
+                            else:
+                                current_ai_chunk = current_ai_chunk + b"\x00" * (len(pcm16) - len(current_ai_chunk))
 
-                    # Update web platform telemetry meters
-                    if web_server:
-                        web_server.update_audio_levels(latest_rms, ai_rms)
+                        bridge.last_played_chunk = current_ai_chunk
+                        ai_rms = audioop.rms(current_ai_chunk, 2) if current_ai_chunk else 0
 
-                    # Write dual-track stereo block (Left: Caller, Right: AI)
-                    if recorder:
-                        recorder.write_stereo_block(pcm16, current_ai_chunk)
+                        # Update web platform telemetry meters
+                        if web_server:
+                            web_server.update_audio_levels(latest_rms, ai_rms)
 
-                    if not any(pcm16):
-                        zero_chunks += 1
+                        # Write dual-track stereo block (Left: Caller, Right: AI)
+                        if recorder:
+                            recorder.write_stereo_block(pcm16, current_ai_chunk)
 
-                    # Client-side barge-in detection:
-                    if bridge.has_pending_playback():
-                        ai_speaking_sec = (
-                            time.time() - bridge.playback_started_at
-                            if bridge.playback_started_at is not None
-                            else 0.0
-                        )
-                        active_threshold = (
-                            web_server.state.get("vad_threshold", vad_threshold)
-                            if web_server and web_server.state.get("vad_threshold") is not None
-                            else vad_threshold
-                        )
-                        active_grace = (
-                            float(web_server.state.get("barge_in_grace_period", VAD_INITIAL_GRACE_PERIOD))
-                            if web_server and web_server.state.get("barge_in_grace_period") is not None
-                            else VAD_INITIAL_GRACE_PERIOD
-                        )
-                        if ai_speaking_sec >= active_grace:
-                            if latest_rms > active_threshold:
-                                consecutive_speech_chunks += 1
-                                if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
-                                    print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
-                                    bridge.clear_playback()
-                                    is_initial_greeting_active = False
-                                    if current_ai_text:
-                                        ai_interrupted = current_ai_text.strip()
-                                        if ai_interrupted:
-                                            if recorder:
-                                                recorder.add_transcript("model", ai_interrupted + " [interrupted]")
-                                            if web_server:
-                                                asyncio.create_task(web_server.broadcast("transcript_turn_complete", {"role": "model", "text": ai_interrupted + " [interrupted]"}))
-                                        current_ai_text = ""
-                                    if recorder:
-                                        recorder.add_event("barge_in", {"rms": latest_rms})
-                                    if web_server:
-                                        asyncio.create_task(web_server.broadcast("barge_in", {"rms": latest_rms}))
+                        if not any(pcm16):
+                            zero_chunks += 1
+
+                        # Client-side barge-in detection:
+                        if bridge.has_pending_playback():
+                            ai_speaking_sec = (
+                                time.time() - bridge.playback_started_at
+                                if bridge.playback_started_at is not None
+                                else 0.0
+                            )
+                            active_threshold = (
+                                web_server.state.get("vad_threshold", vad_threshold)
+                                if web_server and web_server.state.get("vad_threshold") is not None
+                                else vad_threshold
+                            )
+                            active_grace = (
+                                float(web_server.state.get("barge_in_grace_period", VAD_INITIAL_GRACE_PERIOD))
+                                if web_server and web_server.state.get("barge_in_grace_period") is not None
+                                else VAD_INITIAL_GRACE_PERIOD
+                            )
+                            if ai_speaking_sec >= active_grace:
+                                if latest_rms > active_threshold:
+                                    consecutive_speech_chunks += 1
+                                    if consecutive_speech_chunks >= VAD_TRIGGER_CONSECUTIVE:
+                                        print(f"[BARGE-IN] Caller voice detected locally (RMS={latest_rms}) - interrupting AI playback.")
+                                        bridge.clear_playback()
+                                        is_initial_greeting_active = False
+                                        if current_ai_text:
+                                            ai_interrupted = current_ai_text.strip()
+                                            if ai_interrupted:
+                                                if recorder:
+                                                    recorder.add_transcript("model", ai_interrupted + " [interrupted]")
+                                                if web_server:
+                                                    asyncio.create_task(web_server.broadcast("transcript_turn_complete", {"role": "model", "text": ai_interrupted + " [interrupted]"}))
+                                            current_ai_text = ""
+                                        if recorder:
+                                            recorder.add_event("barge_in", {"rms": latest_rms})
+                                        if web_server:
+                                            asyncio.create_task(web_server.broadcast("barge_in", {"rms": latest_rms}))
+                                        consecutive_speech_chunks = 0
+                                else:
                                     consecutive_speech_chunks = 0
                             else:
                                 consecutive_speech_chunks = 0
                         else:
                             consecutive_speech_chunks = 0
-                    else:
-                        consecutive_speech_chunks = 0
 
-                    if is_initial_greeting_active:
-                        # Safety timeout: if greeting turn takes more than 10s, resume audio streaming
-                        if time.time() - greeting_sent_time > 10.0:
-                            is_initial_greeting_active = False
-                        else:
-                            # Do not stream realtime input while Gemini is generating/speaking the initial greeting turn
-                            # Prevents barge-in feedback loops or Gemini getting interrupted by silence frames
-                            await asyncio.sleep(0.01)
-                            continue
+                        if is_initial_greeting_active:
+                            # Safety timeout: if greeting turn takes more than 10s, resume audio streaming
+                            if time.time() - greeting_sent_time > 10.0:
+                                is_initial_greeting_active = False
+                            else:
+                                # Do not stream realtime input while Gemini is generating/speaking the initial greeting turn
+                                # Prevents barge-in feedback loops or Gemini getting interrupted by silence frames
+                                await asyncio.sleep(0.01)
+                                continue
 
-                    # Audio stream sanitization for Gemini Live:
-                    # 1. Echo suppression while AI is speaking:
-                    # If AI is currently speaking and caller is not interrupting, send pure digital silence
-                    # to prevent the AI's synthesized voice from bleeding back into Gemini Live and halting itself.
-                    audio_to_send = pcm16
-                    if bridge.has_pending_playback():
-                        audio_to_send = b"\x00" * len(pcm16)
-                    elif latest_rms < 50:
-                        # 2. Software Noise Gate:
-                        # Ambient background hiss (< 50 RMS) is clamped to pure digital silence.
-                        # Legitimate caller speech (even quiet speech > 50 RMS) streams cleanly to Gemini Live.
-                        audio_to_send = b"\x00" * len(pcm16)
+                        # Audio stream sanitization for Gemini Live:
+                        # 1. Echo suppression while AI is speaking:
+                        # If AI is currently speaking and caller is not interrupting, send pure digital silence
+                        # to prevent the AI's synthesized voice from bleeding back into Gemini Live and halting itself.
+                        audio_to_send = pcm16
+                        if bridge.has_pending_playback():
+                            audio_to_send = b"\x00" * len(pcm16)
+                        elif latest_rms < 50:
+                            # 2. Software Noise Gate:
+                            # Ambient background hiss (< 50 RMS) is clamped to pure digital silence.
+                            # Legitimate caller speech (even quiet speech > 50 RMS) streams cleanly to Gemini Live.
+                            audio_to_send = b"\x00" * len(pcm16)
 
-                    send_buffer.extend(audio_to_send)
-                    now_time = time.time()
-                    if len(send_buffer) >= CHUNK_DISPATCH_BYTES or (now_time - last_send_time >= 0.10 and len(send_buffer) > 0):
-                        to_dispatch = bytes(send_buffer)
-                        send_buffer.clear()
-                        last_send_time = now_time
+                        send_buffer.extend(audio_to_send)
+                        now_time = time.time()
+                        if len(send_buffer) >= CHUNK_DISPATCH_BYTES or (now_time - last_send_time >= 0.10 and len(send_buffer) > 0):
+                            to_dispatch = bytes(send_buffer)
+                            send_buffer.clear()
+                            last_send_time = now_time
+                            try:
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=to_dispatch,
+                                        mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                                    )
+                                )
+                                sent_chunks += 1
+                            except Exception as e:
+                                if not stop_event.is_set() and not session_stop_event.is_set():
+                                    print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
+                                session_stop_event.set()
+                                break
+
+                    if len(send_buffer) > 0 and not session_stop_event.is_set():
                         try:
                             await session.send_realtime_input(
                                 audio=types.Blob(
-                                    data=to_dispatch,
+                                    data=bytes(send_buffer),
                                     mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
                                 )
                             )
-                            sent_chunks += 1
-                        except Exception as e:
-                            if not stop_event.is_set() and not session_stop_event.is_set():
-                                print(f"[Sender] Error sending audio: {type(e).__name__}: {e}")
-                            session_stop_event.set()
-                            break
-
-                if len(send_buffer) > 0 and not session_stop_event.is_set():
-                    try:
-                        await session.send_realtime_input(
-                            audio=types.Blob(
-                                data=bytes(send_buffer),
-                                mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
-                            )
-                        )
-                    except Exception:
-                        pass
-                    send_buffer.clear()
+                        except Exception:
+                            pass
+                        send_buffer.clear()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    print(f"[Sender Fatal Error]: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    session_stop_event.set()
 
             async def receiver():
                 """Pull Gemini's spoken response, resample, push to jitter buffer, and stream transcripts."""
@@ -567,15 +572,21 @@ async def run_gemini_bridge(
             send_task = asyncio.create_task(sender())
             recv_task = asyncio.create_task(receiver())
 
+            stop_task = asyncio.create_task(stop_event.wait())
+            session_stop_task = asyncio.create_task(session_stop_event.wait())
+
             done, pending = await asyncio.wait(
-                [
-                    asyncio.create_task(stop_event.wait()),
-                    asyncio.create_task(session_stop_event.wait()),
-                ],
+                [stop_task, session_stop_task, send_task, recv_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for p in pending:
                 p.cancel()
+
+            for t in done:
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc:
+                        print(f"[Session Task Error]: {type(exc).__name__}: {exc}")
 
             send_task.cancel()
             recv_task.cancel()
