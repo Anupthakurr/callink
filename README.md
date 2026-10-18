@@ -7,7 +7,7 @@
 ![Model](https://img.shields.io/badge/AI%20Engine-Gemini%203.1%20Flash%20Live-orange?style=for-the-badge&logo=google)
 ![Latency](https://img.shields.io/badge/Latency-~800ms%20Roundtrip-success?style=for-the-badge)
 ![Cost](https://img.shields.io/badge/Telephony%20Cost-%240%20(Own%20SIM)-brightgreen?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-purple?style=for-the-badge)
+![License](https://img.shields.io/badge/License-BSL_1.1-red?style=for-the-badge)
 
 **A high-performance Windows telephony gateway bridging standard cellular telephone calls directly to Google's multimodal Gemini Live API (`gemini-3.1-flash-live-preview`) over Bluetooth Hands-Free Profile (HFP).**
 
@@ -526,9 +526,20 @@ To quickly master the architecture and inner mechanics of Callink, study the cod
 
 ---
 
-## 📄 License
+## License & Copyright
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+Copyright (C) 2026 Anup Thakur. All Rights Reserved.
+
+This project is licensed under the **[Business Source License 1.1](LICENSE)** (BSL 1.1).
+
+- **Personal / Educational / Research use:** Free, with attribution.
+- **Commercial use, white-labeling, SaaS deployment, or resale:** Requires a separate written commercial license from the author.
+- **After 2029-01-01:** Automatically converts to MIT License.
+
+To request a commercial license, open an issue or contact via [GitHub](https://github.com/Anupthakurr/callink).
+
+> Any fork, copy, or derivative work must retain this license notice and author attribution.
+
 
 ---
 
