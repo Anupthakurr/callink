@@ -561,6 +561,11 @@ This project is licensed under the **[Business Source License 1.1](LICENSE)** (B
 To request a commercial license, open an issue or contact via [GitHub](https://github.com/Anupthakurr/callink).
 
 > Any fork, copy, or derivative work must retain this license notice and author attribution.
+>
+references i used : 
+1) https://www.gengini.com/blog/sim-based-ai-voice-agent for 2nd architechture 
+2) gsm to sip gateway github repos for first architechture
+
 
 
 ---
