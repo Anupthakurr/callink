@@ -94,14 +94,14 @@ The result is a conversational turn-around latency of **~800ms to 1.2s**, comple
   |                     +--------------------+---------------------+                      |
   |                                          |                                            |
   |   +--------------------------------------v----------------------------------------+   |
-  |   | 3. Bluetooth SCO Audio Bridge (WASAPI / sounddevice)                          |   |
+  |   | 3. Bluetooth SCO Audio Bridge (WDM-KS / sounddevice)                          |   |
   |   |    • 20ms hardware audio sampling @ 16 kHz 16-bit mono PCM                   |   |
-  |   |    • 120ms dynamic SCO jitter buffer & 100ms WebSocket frame batcher          |   |
+  |   |    • 150ms dynamic SCO jitter buffer (4,800B) & 100ms frame batcher           |   |
   |   +--------------------------------------+----------------------------------------+   |
   |                                          |                                            |
   |   +--------------------------------------v----------------------------------------+   |
   |   | 4. Hardware-Calibrated VAD & Live Dynamic Barge-In Engine                     |   |
-  |   |    • Client-side RMS threshold (Default 950 RMS, real-time live adjustable)   |   |
+  |   |    • Client-side RMS threshold (Default 2,800 RMS, 6-chunk sustained filter)  |   |
   |   |    • Instant playback queue flush & interrupted turn transcript logger        |   |
   |   +--------------------------------------+----------------------------------------+   |
   |                                          |                                            |
@@ -201,7 +201,7 @@ Callink was engineered from first principles to overcome the prohibitive convers
 ### 7. 🛡️ Enterprise Hardware Resilience
 - **Anti-Cut Barge-In Engine:** Calibrated client-side RMS speech detection and immediate audio playback buffer purging allows callers to interrupt the AI naturally.
 - **Windows Stay-Awake Guard:** Integrated with Win32 `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`) to prevent PC/laptop sleep and keep Bluetooth and network links alive 24/7.
-- **120ms Dynamic SCO Jitter Buffer:** Absorbs Bluetooth packet jitter on Windows for smooth, glitch-free telephony playback.
+- **150ms Dynamic SCO Jitter Buffer (4,800 Bytes):** Absorbs network and Bluetooth packet jitter on Windows for smooth, continuous, glitch-free telephony playback.
 
 ---
 
@@ -433,7 +433,7 @@ Defines the initial delay after the AI **starts speaking** before caller interru
 - **Purpose:** Prevents the AI's own synthesized voice from acoustically looping back through the Bluetooth mic and self-triggering a false interruption at the very start of speaking.
 - **Short Grace (`0.10s`):** Interruption is allowed almost immediately. Caller can cut in very early.
 - **Long Grace (`0.50s`):** AI gets a 500ms protected window to begin speaking before barge-in activates.
-- **Recommended:** `0.20s` (200ms) - prevents echo self-triggers while still feeling highly responsive.
+- **Recommended:** `0.50s` (500ms) - provides a protected opening window to deliver initial sentences cleanly without premature cutoff.
 
 ---
 
