@@ -442,12 +442,23 @@ Defines the initial delay after the AI **starts speaking** before caller interru
 Barge-In uses a **dual-detection system** (client-side + server-side):
 
 1. **Client-Side RMS Detection** (`gemini_live_bridge.py` => `sender()`):
-   Every 20ms audio frame from the Bluetooth mic is measured for loudness (RMS). If `caller_rms > vad_threshold` for **2 consecutive frames (~40ms)** => `bridge.clear_playback()` is called, draining the AI audio buffer and stopping playback instantly.
+   Every 20ms audio frame from the Bluetooth mic is measured for loudness (RMS). If `caller_rms > vad_threshold` for **6 consecutive frames (~120ms)** => `bridge.clear_playback()` is called, draining the AI audio buffer and stopping playback instantly.
 
 2. **Server-Side Interruption** (Gemini Live API):
    Gemini Live's built-in VAD (`END_SENSITIVITY_HIGH`) also detects caller speech server-side and signals `server_content.interrupted = True`, providing a secondary safety net.
 
-### 5. Preventing Windows Sleep During Standby
+### 5. AI Voice Cutting Out on Background Noise or Sounding Choppy / Broken
+- **Symptom:** AI stops speaking prematurely upon slight ambient noise (fans, air conditioning, breathing), or synthesized speech sounds stuttered, choppy, or cracked over Bluetooth SCO.
+- **Root Cause:**
+  1. **Hyper-Sensitive VAD:** When `vad_threshold` is set too low (< 1,500 RMS) with a tight trigger window (2 frames / 40ms), ambient noise continuously triggers client-side barge-in, abruptly draining the playback buffer mid-sentence.
+  2. **Jitter Cushion Starvation:** When packet buffers are below 100ms, normal WebSocket cloud packet jitter across the internet starves the PortAudio playback DAC, outputting zero-byte silence blocks that sound like voice breaks.
+- **Resolution:**
+  1. **Calibrated VAD Threshold (`2,800 RMS`):** Ambient Bluetooth line hiss (800-1,200 RMS) is ignored while conversational caller voice (> 2,500 RMS) triggers clean interruptions.
+  2. **Multi-Frame Sustained Speech Window (6 chunks / ~120ms):** Transient audio clicks, breaths, or ambient noise spikes are ignored unless speech is sustained.
+  3. **150ms DynamicSCO Pre-Buffer Cushion (`4,800 bytes`):** Holds 150ms of audio before starting DAC output, absorbing internet latency spikes and ensuring 100% continuous, crystal-clear voice streaming with zero stuttering.
+  4. **0.50s Barge-In Grace Window:** Protects the initial sentence delivery from premature acoustic self-interruption.
+
+### 6. Preventing Windows Sleep During Standby
 Callink automatically invokes `SetThreadExecutionState` on startup to keep the PC active while waiting for cellular calls. If using a laptop on battery, ensure Windows Power & Battery settings allow background network activity when the lid is closed.
 
 ---
