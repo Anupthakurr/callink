@@ -13,7 +13,7 @@
 
 [Features](#-key-features) • [Live Call Demo](#-real-world-live-call-recording-demo) • [Architecture](#-architecture--telephony-pipeline) • [Latency Benchmark](#-latency-benchmark-callink-vs-legacy-telephony) • [Quickstart](#-quickstart-1-click-on-windows) • [Dashboard Overview](#-glassmorphic-web-dashboard) • [Troubleshooting](#-troubleshooting--audio-tuning)
 
-LIVE URL - https://callink-website.vercel.app/
+[![Live Website](https://img.shields.io/badge/🌐_Official_Website-callink--website.vercel.app-7928CA?style=for-the-badge&logo=vercel)](https://callink-website.vercel.app/)
 
 <br><br>
 
@@ -172,33 +172,33 @@ Callink was engineered from first principles to overcome the prohibitive convers
 - **Outbound AI Call Dispatcher:** Dispatch proactive outbound calls directly from the web dashboard. Enter the recipient's phone number, name, and conversation goal—the AI dials via Windows Phone Link / Android dialer and speaks first with a tailored greeting!
 - **Call Pre-Warming:** Telephony listeners detect incoming rings and pre-initialize WebSocket connections to achieve zero-latency pickup.
 
-### 2. 🌐 Multilingual Auto-Detection & Code-Switching
+### 3. 🌐 Multilingual Auto-Detection & Code-Switching
 - **Dynamic Language Detection:** The AI automatically detects the caller's spoken language in real-time (Hindi, English, Spanish, French, German, Japanese, Hinglish, etc.) and naturally matches their language and dialect.
 - **Custom Default Language:** Set your business's default conversational language in the dashboard settings with seamless fallback adaptation.
 
-### 3. 🎨 Obsidian Glassmorphic Web Dashboard
+### 4. 🎨 Obsidian Glassmorphic Web Dashboard
 - **Futuristic Studio UI:** A sleek dark-mode glassmorphic dashboard (`http://localhost:5000`) built with multi-layer ambient lighting, frosted glass cards, and glowing telemetry nodes.
 - **Dual-Channel Live VU Meters:** Real-time LED audio level meters with decibel and RMS readouts for both the caller's microphone and Gemini AI's voice.
 - **Live Hardware Nodes:** Instant visual status for Windows Phone Link, Bluetooth HFP SCO bridge, Gemini Live API connection, and Windows Stay-Awake guard.
 - **Real-Time Auto-Scrolling Transcripts:** Watch speech bubbles appear live on screen as caller and AI converse.
 
-### 4. 🎙️ Dual-Track Call Recording & Master Web Player
+### 5. 🎙️ Dual-Track Call Recording & Master Web Player
 - **Studio-Grade Stereo WAVs:** Every call is automatically recorded to disk (`recordings/`) in synchronized 16 kHz 16-bit stereo WAV format:
   - **Left Channel (L):** Isolated caller microphone.
   - **Right Channel (R):** Isolated Gemini AI voice.
 - **Master Audio Player with Channel Isolation:** Built-in Web Audio API player allows you to toggle **Stereo (Dual)**, isolate **Caller Only**, isolate **AI Only**, or blend to **Mixed Mono** with playback speed control (0.75x – 2.0x).
 - **JSON Metadata & Transcripts:** Full timestamped JSON transcripts saved alongside every WAV recording.
 
-### 5. 🧠 Instant In-Browser Voice Studio
+### 6. 🧠 Instant In-Browser Voice Studio
 - Talk directly to the Gemini Live AI voice agent in your browser using your PC's microphone and speakers.
 - Perfect for testing prompts, rehearsing outbound scripts, or testing document knowledge without dialing a phone number.
 
-### 6. 📚 Zero-Latency Business Knowledge Base Grounding
+### 7. 📚 Zero-Latency Business Knowledge Base Grounding
 - Upload business documents (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`) directly through the web UI.
 - Text is automatically extracted, tokenized, and injected straight into Gemini Live's system context.
 - Provides grounded, accurate answers on pricing, business policies, menus, and support questions with **zero vector database lookup latency**.
 
-### 7. 🛡️ Enterprise Hardware Resilience
+### 8. 🛡️ Enterprise Hardware Resilience
 - **Anti-Cut Barge-In Engine:** Calibrated client-side RMS speech detection and immediate audio playback buffer purging allows callers to interrupt the AI naturally.
 - **Windows Stay-Awake Guard:** Integrated with Win32 `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`) to prevent PC/laptop sleep and keep Bluetooth and network links alive 24/7.
 - **150ms Dynamic SCO Jitter Buffer (4,800 Bytes):** Absorbs network and Bluetooth packet jitter on Windows for smooth, continuous, glitch-free telephony playback.
@@ -222,9 +222,9 @@ Callink was engineered from first principles to overcome the prohibitive convers
 
 ## 🚀 Quickstart (1-Click on Windows)
 
-### Option 1: Standalone Single Executable (`Callink.exe`) — Zero Python Required!
+### Option 1: Standalone Single Executable (`Callink_v2.1.exe`) — Zero Python Required!
 If you want to run Callink or share it with others who don't have Python installed:
-1. Double-click **`Callink.exe`** in the repository root (or download from Releases).
+1. Double-click **`Callink_v2.1.exe`** (or `Callink.exe`) in the repository root or download from GitHub Releases.
 2. On first launch, if your API key isn't configured, enter your `GEMINI_API_KEY` when prompted.
 3. The dashboard opens automatically at **`http://localhost:5000`**!
 
@@ -350,20 +350,20 @@ The web dashboard is organized into 5 dedicated studio suites:
 
 ---
 
-## 📦 Building Standalone `Callink.exe`
+## 📦 Building Standalone Executable (`Callink_v2.1.exe`)
 
 To package the entire Python runtime, dependencies, and web platform into a single distributable Windows `.exe`:
 
 ```bash
-# Run the automated build script:
-build_exe.bat
+# Run the automated v2.1 build script:
+build_v2_1_exe.bat
 ```
 *Or manually with PyInstaller:*
 ```bash
-pyinstaller --noconfirm Callink.spec
+pyinstaller --noconfirm Callink_v2_1.spec
 ```
 
-The resulting binary will be generated in `dist\Callink.exe`. It can be run on any 64-bit Windows 10/11 PC with zero prerequisites.
+The resulting binary will be generated in `dist\Callink_v2.1.exe`. It can be run on any 64-bit Windows 10/11 PC with zero prerequisites.
 
 ---
 
@@ -405,9 +405,11 @@ The **RMS Threshold** is the loudness level that a caller's voice must exceed be
 | **Medium (Default)** | `2,500 - 3,600` | **Balanced** - Triggers on normal conversational voice, ignores background hiss | Standard calls (recommended) |
 | **High** | `5,000 - 6,000` | **Noise-resistant** - Only very loud, clear speech triggers interruption | Outdoor / noisy environments |
 
-> **Recommended: Keep slider LOW at 2,500-3,000 RMS**
+> **Recommended: Default 2,800 RMS (Calibrated Noise-Immune Range: 2,500 - 3,200 RMS)**
 >
-> For outbound cellular calls over Bluetooth HFP, the caller's voice typically sits in the **200-1,500 RMS** range.
+> On cellular calls over Bluetooth HFP:
+> - Ambient Bluetooth line noise, fans, and breathing typically register in the **600 - 1,400 RMS** range.
+> - Genuine conversational caller voice typically registers in the **2,500 - 4,500+ RMS** range.
 > - Too **high** (5,000+): Caller's normal voice never triggers barge-in => AI keeps talking **over** the caller.
 > - Too **low** (< 1,000): Bluetooth SCO background hiss or carrier tones may falsely interrupt the AI.
 >
@@ -476,7 +478,7 @@ callink/
 │   ├── styles.css               # Obsidian Glassmorphic 2.0 design system
 │   └── app.js                   # Frontend WebSocket client, Web Audio player & UI logic
 ├── gsm_gemini_gateway.py        # Core application orchestrator, single instance & standby loop
-├── audio_bridge.py              # Bluetooth SCO audio bridge (WASAPI COM & sounddevice)
+├── audio_bridge.py              # Bluetooth SCO audio bridge (PortAudio WDM-KS & WASAPI)
 ├── gemini_live_bridge.py        # Gemini Live WebSocket streaming, VAD barge-in & session manager
 ├── audio_resampler.py           # 16 kHz <-> 24 kHz in-memory continuous rate converter
 ├── power_guard.py               # Windows Stay-Awake / Sleep prevention watchdog
@@ -485,8 +487,10 @@ callink/
 ├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
 ├── knowledge_manager.py         # Enterprise document parser (.pdf, .docx, .txt) & prompt injector
 ├── web_server.py                # Aiohttp server, real-time WebSocket gateway & REST APIs
-├── build_exe.bat                # 1-Click PyInstaller compilation script
-├── Callink.spec                 # PyInstaller standalone executable specification
+├── build_v2_1_exe.bat           # 1-Click v2.1 enterprise executable compilation script
+├── Callink_v2_1.spec            # PyInstaller v2.1 standalone executable specification
+├── build_exe.bat                # 1-Click legacy PyInstaller compilation script
+├── Callink.spec                 # Legacy PyInstaller standalone specification
 ├── run.bat                      # 1-Click Windows environment launcher & auto-setup
 ├── requirements.txt             # Python dependencies
 ├── .env.example                 # Environment configuration template (GEMINI_API_KEY)
@@ -561,10 +565,13 @@ This project is licensed under the **[Business Source License 1.1](LICENSE)** (B
 To request a commercial license, open an issue or contact via [GitHub](https://github.com/Anupthakurr/callink).
 
 > Any fork, copy, or derivative work must retain this license notice and author attribution.
->
-references i used : 
-1) https://www.gengini.com/blog/sim-based-ai-voice-agent for 2nd architechture 
-2) gsm to sip gateway github repos for first architechture
+
+---
+
+## 🔗 Architecture & Telephony References
+
+1. **Direct Cellular Telephony Architecture (SIM-Based Voice Agent):** [Gengini - SIM-based AI Voice Agent Architecture](https://www.gengini.com/blog/sim-based-ai-voice-agent) — Reference for PC-to-cellular Bluetooth SCO direct voice link.
+2. **GSM-to-SIP Gateways & PBX Comparison:** Classical Asterisk PBX / Chan_dongle / GSM-to-SIP gateway topologies — Benchmark for eliminating intermediate PBX transcoding and trunking latency.
 
 
 
