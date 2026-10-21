@@ -378,7 +378,16 @@ The resulting binary will be generated in `dist\Callink.exe`. It can be run on a
 - During phone calls, audio is routed bidirectionally between your phone's cellular baseband modem and your PC's Bluetooth Hands-Free device (`Hands-Free HF Audio`).
 - If you want to listen to live calls without disturbing the caller, use headphones or adjust device volume in Windows Sound Settings to prevent acoustic feedback loop into the microphone.
 
-### 3. Tuning Conversational Barge-In (Interruption Sensitivity)
+### 3. Phone Link "Transfer to PC" Frozen or Phone Audio Selector Stuck
+- **Symptom:** During an incoming or active cellular call, clicking **"Transfer to PC"** in Microsoft Phone Link is completely unresponsive / frozen, and the in-call audio output selector on the smartphone screen (Earpiece / Speaker / Bluetooth) is also grayed out or frozen.
+- **Root Cause:** Windows Bluetooth HFP (`bthhfenum.sys`) is an exclusive kernel driver for Synchronous Connection-Oriented (SCO) audio. If two Callink instances run simultaneously (process collision) or an audio stream is opened before SCO negotiation completes, the kernel driver enters a desynchronized "ghost" state (`DeviceIoControl GLE = 0x00000001`). When an audio transfer is attempted, the Bluetooth driver hangs waiting for an unacknowledged handshake, freezing both the Phone Link UI thread and Android's telephony audio routing manager.
+- **Resolution (2-Minute Clean Reset):**
+  1. **Ensure Single Instance:** Confirm only one Callink instance is active. Terminate any orphan processes via Task Manager or `taskkill /F /IM Callink.exe`.
+  2. **Unpair on Smartphone:** On your Android phone, go to **Settings &rarr; Bluetooth &rarr; Your PC**, tap the settings/info icon, and select **Unpair / Forget**.
+  3. **Remove Device on PC:** In Windows **Settings &rarr; Bluetooth & devices &rarr; Devices**, locate your smartphone, click the three dots (`...`), and select **Remove device**.
+  4. **Re-Pair via Phone Link Calls Wizard (Crucial):** Open the **Phone Link** app on your PC, navigate to the **Calls** tab in the sidebar, and click **"Set up"** or **"Get Started"**. Complete the pairing wizard directly through Phone Link (rather than standard Windows Bluetooth settings) so that Windows telephony cleanly registers the HFP profile and generates fresh SCO encryption keys.
+
+### 4. Tuning Conversational Barge-In (Interruption Sensitivity)
 
 **Barge-In** is the mechanism that allows callers to naturally interrupt the AI agent mid-sentence - just like a real human conversation. When the caller speaks while the AI is talking, Callink instantly detects the caller's voice and stops AI playback so the caller can be heard.
 
@@ -438,7 +447,7 @@ Barge-In uses a **dual-detection system** (client-side + server-side):
 2. **Server-Side Interruption** (Gemini Live API):
    Gemini Live's built-in VAD (`END_SENSITIVITY_HIGH`) also detects caller speech server-side and signals `server_content.interrupted = True`, providing a secondary safety net.
 
-### 4. Preventing Windows Sleep During Standby
+### 5. Preventing Windows Sleep During Standby
 Callink automatically invokes `SetThreadExecutionState` on startup to keep the PC active while waiting for cellular calls. If using a laptop on battery, ensure Windows Power & Battery settings allow background network activity when the lid is closed.
 
 ---
