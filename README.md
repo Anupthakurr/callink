@@ -27,7 +27,11 @@
 
 Experience an actual, unedited ~8-minute cellular phone conversation handled autonomously by Callink and Google's multimodal Gemini Live voice model (`gemini-3.1-flash-live-preview`).
 
-Demo video link --  https://youtu.be/eiAe3MKWJaA?si=rhlqG6b7Zlq0tT4R
+-------------------------------------------------------------------------------------------------______----------------------------------------------------------------
+
+              ## Demo video link --  https://youtu.be/eiAe3MKWJaA?si=rhlqG6b7Zlq0tT4R
+
+------------------------------------------------------------------------------------------------________---------------------------------------------------------------
 
 > **Call Highlights:**
 > - **Call Direction:** Autonomous Outbound Cellular Call (placed via Android SIM)
