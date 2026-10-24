@@ -546,9 +546,9 @@ This section provides an exhaustive reference of all top-level functions and cla
 ---
 
 #### 2. `audio_bridge.py` (890 LOC) — *Bluetooth SCO Hardware Audio Bridge*
-* **`find_hfp_devices()`**: Enumerates all Windows audio endpoints via `sounddevice` / PortAudio, filtering specifically for Bluetooth Hands-Free Profile (HFP) input and output endpoints. Prioritizes low-latency direct WDM-KS (`Windows DirectSound / Kernel Streaming`) over WASAPI/MME.
+* **`find_hfp_devices()`**: Enumerates all Windows audio endpoints via `sounddevice` / PortAudio, filtering specifically for Bluetooth Hands-Free Profile (HFP) input and output endpoints. Prioritizes low-latency direct WDM-KS (`Windows Driver Model / Kernel Streaming`) over WASAPI/MME.
 * **`find_active_bthhfenum_endpoints()`**: Low-level Windows COM MMDevice enumerator that inspects `bthhfenum.sys` registry endpoints to locate active Bluetooth SCO audio render and capture pins directly.
-* **`HFPBridge.start()`**: Initializes bidirectional audio streams (16 kHz, 16-bit PCM, mono) using either native low-latency WASAPI COM worker threads or PortAudio stream callbacks based on hardware capability.
+* **`HFPBridge.start()`**: Initializes bidirectional audio streams (16 kHz, 16-bit PCM, mono) using direct PortAudio WDM-KS kernel streaming callbacks with native WASAPI COM worker threads fallback.
 * **`HFPBridge.stop()`**: Atomically drains pending buffers, halts worker capture/render loops, terminates PortAudio streams, and releases hardware COM endpoint interfaces.
 * **`HFPBridge.is_healthy()`**: Diagnostic watchdog verifying that both capture and render streams are running and delivering valid audio frames without buffer underflows or hardware drops.
 * **`HFPBridge.input_callback(indata, frames, time_info, status)`**: High-frequency PortAudio capture callback; receives 20ms incoming caller microphone audio chunks over Bluetooth SCO, computes RMS energy for live VU meters, and pushes frames into the upstream queue for Gemini Live.
@@ -703,8 +703,8 @@ To quickly master the architecture and inner mechanics of Callink, study the cod
    - Study how WinRT (`PhoneCallManager`) detects incoming/active GSM calls with zero polling delay.
 
 3. **Explore Hardware Telephony Audio (`audio_bridge.py`)**:
-   - Study `HFPBridge`: How Windows WASAPI COM interfaces (`IAudioClient`, `IMMDeviceEnumerator`) stream bidirectional 16 kHz 16-bit PCM audio over Bluetooth Hands-Free Profile.
-   - Study `find_hfp_devices()`: Auto-discovering and pairing smartphone Bluetooth audio endpoints.
+   - Study `HFPBridge`: How direct **Windows WDM-KS (Kernel Streaming)** via `bthhfenum.sys` (with native WASAPI COM fallback) streams ultra-low latency bidirectional 16 kHz 16-bit PCM audio over Bluetooth Hands-Free Profile (HFP/SCO), completely bypassing Windows audio mixer lock and latency.
+   - Study `find_hfp_devices()`: Auto-discovering and binding low-latency direct WDM-KS kernel streaming driver endpoints for paired smartphone Bluetooth audio.
 
 4. **Learn Dialing, Recording & Knowledge Grounding**:
    - **`outbound_dialer.py`**: How Windows `tel:` protocol & Android ADB dial out, and how proactive opening pitches are primed.
