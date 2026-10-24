@@ -471,61 +471,63 @@ Callink automatically invokes `SetThreadExecutionState` on startup to keep the P
 
 ---
 
-## 📁 Repository Structure
+## 📁 Repository Structure & Code Metrics
 
 ```text
-callink/
-├── assets/                      # Dashboard UI previews, architecture diagrams & audio demos
-│   ├── call_demo_outbound.mp3   # Streamable live call recording demo
-│   ├── call_demo_outbound.mp4   # Embedded video player demo
-│   └── dashboard_*.png          # Obsidian Glassmorphic dashboard screenshots
-├── web/                         # Modern Obsidian Glassmorphic Web Dashboard
-│   ├── index.html               # Main dashboard layout & 5 studio suites
-│   ├── styles.css               # Obsidian Glassmorphic 2.0 design system
-│   └── app.js                   # Frontend WebSocket client, Web Audio player & UI logic
-├── gsm_gemini_gateway.py        # Core application orchestrator, single instance & standby loop
-├── audio_bridge.py              # Bluetooth SCO audio bridge (PortAudio WDM-KS & WASAPI)
-├── gemini_live_bridge.py        # Gemini Live WebSocket streaming, VAD barge-in & session manager
-├── audio_resampler.py           # 16 kHz <-> 24 kHz in-memory continuous rate converter
-├── power_guard.py               # Windows Stay-Awake / Sleep prevention watchdog
-├── phone_audio_silencer.py      # Microsoft Phone Link audio silencer & desktop VoIP detector
-├── outbound_dialer.py           # Outbound cellular dialing via Phone Link & Android ADB
-├── call_recorder.py             # Dual-track stereo WAV recorder & transcript logger
-├── knowledge_manager.py         # Enterprise document parser (.pdf, .docx, .txt) & prompt injector
-├── web_server.py                # Aiohttp server, real-time WebSocket gateway & REST APIs
-├── build_v2_1_exe.bat           # 1-Click v2.1 enterprise executable compilation script
-├── Callink_v2_1.spec            # PyInstaller v2.1 standalone executable specification
-├── build_exe.bat                # 1-Click legacy PyInstaller compilation script
-├── Callink.spec                 # Legacy PyInstaller standalone specification
-├── run.bat                      # 1-Click Windows environment launcher & auto-setup
-├── requirements.txt             # Python dependencies
-├── .env.example                 # Environment configuration template (GEMINI_API_KEY)
-├── settings.json                # Persisted persona & VAD configuration (auto-generated)
-├── recordings/                  # Dual-track stereo WAV call archives & transcripts (auto-generated)
-└── knowledge/                   # Uploaded enterprise grounding documents (auto-generated)
+callink/                                        # Total Codebase: ~10,466+ Lines of Code
+├── assets/                                     # Dashboard UI previews, architecture diagrams & audio demos
+│   ├── call_demo_outbound.mp3                  # Streamable live call recording demo
+│   ├── call_demo_outbound.mp4                  # Embedded video player demo
+│   └── dashboard_*.png                         # Obsidian Glassmorphic dashboard screenshots
+├── web/                                        # Modern Obsidian Glassmorphic Web Dashboard (5,933 LOC)
+│   ├── index.html                              # Main dashboard layout & 5 studio suites (819 LOC)
+│   ├── styles.css                              # Obsidian Glassmorphic 2.0 design system (2,806 LOC)
+│   └── app.js                                  # Frontend WebSocket client, Web Audio player & UI logic (2,308 LOC)
+├── gsm_gemini_gateway.py                       # Core application orchestrator, single instance & standby loop (754 LOC)
+├── audio_bridge.py                             # Bluetooth SCO audio bridge (PortAudio WDM-KS & WASAPI) (890 LOC)
+├── gemini_live_bridge.py                       # Gemini Live WebSocket streaming, VAD barge-in & session manager (726 LOC)
+├── audio_resampler.py                          # 16 kHz <-> 24 kHz in-memory continuous rate converter (36 LOC)
+├── power_guard.py                              # Windows Stay-Awake / Sleep prevention watchdog (40 LOC)
+├── phone_audio_silencer.py                     # Microsoft Phone Link audio silencer & desktop VoIP detector (106 LOC)
+├── outbound_dialer.py                          # Outbound cellular dialing via Phone Link & Android ADB (321 LOC)
+├── call_recorder.py                            # Dual-track stereo WAV recorder & transcript logger (236 LOC)
+├── knowledge_manager.py                        # Enterprise document parser (.pdf, .docx, .txt) & prompt injector (342 LOC)
+├── web_server.py                               # Aiohttp server, real-time WebSocket gateway & REST APIs (986 LOC)
+├── security_guard.py                           # Anti-tamper & enterprise security watchdog (96 LOC)
+├── build_v2_1_exe.bat                          # 1-Click v2.1 enterprise executable compilation script (47 LOC)
+├── Callink_v2_1.spec                           # PyInstaller v2.1 standalone executable specification (96 LOC)
+├── build_exe.bat                               # 1-Click legacy PyInstaller compilation script (45 LOC)
+├── Callink.spec                                # Legacy PyInstaller standalone specification (92 LOC)
+├── run.bat                                     # 1-Click Windows environment launcher & auto-setup (76 LOC)
+├── requirements.txt                            # Python dependencies specification
+├── .env.example                                # Environment configuration template (GEMINI_API_KEY)
+├── settings.json                               # Persisted persona & VAD configuration (auto-generated)
+├── recordings/                                 # Dual-track stereo WAV call archives & transcripts (auto-generated)
+└── knowledge/                                  # Uploaded enterprise grounding documents (auto-generated)
 ```
 
 ### 🗂️ Component & Architecture Responsibilities
 
-| Component / File | Primary Responsibility & Technical Implementation |
-| :--- | :--- |
-| **`gsm_gemini_gateway.py`** | **Master Application Orchestrator:** Manages process single-instance locks, initializes COM and logging, monitors physical cellular call state changes via WinRT (`PhoneCallManager`), and orchestrates the standby and active call lifecycle. |
-| **`audio_bridge.py`** | **Bluetooth SCO Hardware Audio Bridge:** Implements low-level Windows Core Audio (WASAPI) COM interfaces (`IAudioClient`, `IMMDeviceEnumerator`), captures and renders bidirectional 16 kHz 16-bit PCM frames (20ms/320 samples) over Bluetooth Hands-Free Profile, and manages ring buffers. |
-| **`gemini_live_bridge.py`** | **Gemini Live AI WebSocket Pipeline:** Handles real-time bidirectional WebSocket audio streaming to Google's `gemini-3.1-flash-live-preview`, executes 100ms audio frame dispatching, performs client-side RMS speech barge-in interruption detection, and injects conversational history upon mid-call session reconnects. |
-| **`audio_resampler.py`** | **High-Fidelity Audio Resampler:** Performs continuous state-preserved sample rate conversion between 24 kHz (Gemini output) and 16 kHz (Bluetooth telephony) using `audioop.ratecv` with zero clicking or distortion. |
-| **`power_guard.py`** | **Windows Power & Stay-Awake Guard:** Interacts with `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED \| ES_AWAYMODE_REQUIRED`) to keep CPU, network, and Bluetooth endpoints active 24/7 without entering system sleep. |
-| **`phone_audio_silencer.py`** | **Audio Loopback Silencer:** Uses `pycaw` to mute Phone Link's speaker and microphone sessions to prevent acoustic feedback loops, and detects active PC VoIP calls. |
-| **`outbound_dialer.py`** | **Proactive Cellular Outbound Calling:** Dispatches cellular calls via Windows Phone Link protocol (`tel:`) or Android ADB, handles transfer states, and primes Gemini Live with an outbound conversational role and instant proactive greeting trigger. |
-| **`call_recorder.py`** | **Dual-Track Stereo WAV Recorder:** Captures synchronized dual-channel 16 kHz 16-bit audio (Left: Caller mic, Right: AI audio) to disk, generates metadata cards, and saves timestamped conversational dialogue JSON transcripts. |
-| **`knowledge_manager.py`** | **Business Document Grounding:** Extracts text from uploaded files (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`), calculates token budgets, and injects context directly into Gemini Live's system prompt in-memory with zero vector lookup latency. |
-| **`web_server.py`** | **Asynchronous Web Platform & Telemetry Gateway:** High-performance `aiohttp` server hosting the web platform, handling real-time WebSocket streams for live VU meters and speech transcripts, and serving REST APIs for recordings, knowledge files, and AI persona settings. |
-| **`web/`** | **Obsidian Glassmorphic 2.0 Web Dashboard:** Complete frontend studio suite featuring `index.html` (5 studio tabs: Live Gateway, Voice Studio, Recordings, Knowledge Base, AI Persona), `styles.css` (dark-mode glassmorphic design system), and `app.js` (Web Audio API channel isolation, VU meters, and in-browser Voice Studio). |
-| **`run.bat`** | **1-Click Windows Auto-Setup Launcher:** Automatically validates Python 3.9+, initializes virtual environment (`venv`), installs dependencies, prompts for `GEMINI_API_KEY` on first launch, and opens the dashboard. |
-| **`build_exe.bat` & `Callink.spec`** | **Standalone Compilation:** PyInstaller configuration and script to bundle the complete Python runtime, dependencies, and web assets into a zero-dependency standalone `Callink.exe` binary. |
-| **`assets/`** | **Visual Assets & Media Demos:** Stores dashboard UI screenshots, architectural diagrams, and sample streamable call recordings (`call_demo_outbound.mp3`, `call_demo_outbound.mp4`). |
-| **`recordings/`** *(Runtime)* | **Call Archive Storage:** Automatically created directory where synchronized stereo WAV call recordings and JSON transcripts are archived. |
-| **`knowledge/`** *(Runtime)* | **Grounding Documents Store:** Automatically created directory housing uploaded business documents for prompt injection. |
-| **`settings.json`** *(Runtime)* | **Persisted Configuration:** Stores user-configured AI persona, selected voice, barge-in RMS threshold, grace periods, and language defaults. |
+| Component / File | LOC | Key Functions & Methods Handled | Primary Responsibility & Technical Implementation |
+| :--- | :---: | :--- | :--- |
+| **`gsm_gemini_gateway.py`** | **754** | `main()`, `main_async()`, `watch_call_and_hfp()`, `ensure_single_instance()`, `ensure_gemini_api_key()` | **Master Application Orchestrator:** Manages process single-instance Win32 mutex locks, initializes COM single-threaded apartments, monitors physical cellular call state transitions via WinRT (`Windows.ApplicationModel.Calls.PhoneCallManager`), and orchestrates the standby polling loop, pre-warming triggers, and active call lifecycle. |
+| **`audio_bridge.py`** | **890** | `find_hfp_devices()`, `find_active_bthhfenum_endpoints()`, `HFPBridge.start()`, `HFPBridge.stop()`, `HFPBridge.is_healthy()`, `HFPBridge.input_callback()`, `HFPBridge.output_callback()`, `HFPBridge.push_playback_audio()`, `HFPBridge.flush_turn_playback()`, `HFPBridge.clear_playback()`, `HFPBridge.has_pending_playback()`, `HFPBridge.get_audio_levels()` | **Bluetooth SCO Hardware Audio Bridge:** Implements direct PortAudio WDM-KS kernel streaming (`sounddevice`) to `bthhfenum.sys` with native WASAPI COM fallback. Manages bidirectional 16 kHz 16-bit PCM frames (20ms / 320 samples), dynamic 150ms SCO jitter buffer (4,800 bytes cushion), and edge-cosine anti-crackle playback smoothing. |
+| **`gemini_live_bridge.py`** | **726** | `run_gemini_bridge()`, `resample_for_hfp()`, `GeminiPrewarmer.start_prewarm()`, `GeminiPrewarmer.acquire_session()`, `GeminiPrewarmer.release()`, `GeminiPrewarmer.is_ready()`, `GeminiPrewarmer.is_active()`, `GeminiPrewarmer._worker()` | **Gemini Live AI WebSocket Pipeline:** Handles real-time bidirectional WebSocket audio streaming to Google's `gemini-3.1-flash-live-preview`. Executes 100ms audio frame batching, performs hardware-calibrated client-side RMS speech barge-in detection (`vad_threshold=2800`), pre-warms sessions during cellular ring, and injects conversation history on reconnects. |
+| **`audio_resampler.py`** | **36** | `resample_for_hfp()`, `HFPResampler.resample()`, `HFPResampler.reset()` | **High-Fidelity Audio Resampler:** Performs continuous state-preserved sample rate conversion between 24 kHz (Gemini output) and 16 kHz (Bluetooth telephony) using `audioop.ratecv` with zero clicking, distortion, or phase artifacts. |
+| **`power_guard.py`** | **40** | `prevent_sleep()`, `start_stay_awake_heartbeat()`, `allow_sleep()` | **Windows Power & Stay-Awake Guard:** Interacts with `kernel32.SetThreadExecutionState` (`ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_CONTINUOUS`) with a 15-second heartbeat thread to keep CPU, network, and Bluetooth endpoints active 24/7 without entering system sleep. |
+| **`phone_audio_silencer.py`** | **106** | `set_phone_link_audio_silenced()`, `is_pc_voip_call_active()`, `PhoneLinkAudioSilencer.start()`, `PhoneLinkAudioSilencer.stop()`, `PhoneLinkAudioSilencer._run()` | **Audio Loopback Silencer:** Uses Windows Core Audio (`pycaw`) and `psutil` to mute Phone Link's (`PhoneExperienceHost.exe`) speaker and microphone sessions to eliminate room echo and feedback screech, and detects active PC VoIP calls. |
+| **`outbound_dialer.py`** | **321** | `start_outbound_dial()`, `cancel_outbound_dial()`, `trigger_system_dialer()`, `hangup_current_call()`, `clean_phone_number()`, `format_e164_number()`, `get_active_outbound()`, `consume_active_outbound()`, `build_outbound_context()`, `build_outbound_proactive_prompt()`, `is_phone_link_call_connected()`, `is_phone_link_call_present()`, `is_call_transferred_to_pc()`, `trigger_transfer_to_pc_async()`, `find_phone_link_window()` | **Proactive Cellular Outbound Calling:** Dispatches cellular calls via Windows Phone Link protocol (`tel:`) and Android ADB, validates audio transfer states, and primes Gemini Live with an outbound conversational role and instant proactive greeting trigger. |
+| **`call_recorder.py`** | **236** | `get_all_recordings()`, `delete_recording()`, `CallRecorder.start()`, `CallRecorder.write_stereo_block()`, `CallRecorder.add_transcript()`, `CallRecorder.add_event()`, `CallRecorder.finish()`, `CallRecorder.get_summary()` | **Dual-Track Stereo WAV Recorder:** Captures synchronized dual-channel 16 kHz 16-bit audio (Left: Caller mic, Right: AI audio) to disk, generates metadata cards, and saves timestamped conversational dialogue JSON transcripts. |
+| **`knowledge_manager.py`** | **342** | `extract_text_from_file()`, `add_document()`, `delete_document()`, `toggle_document()`, `get_all_documents()`, `get_document_full()`, `get_knowledge_summary()`, `build_knowledge_prompt()`, `get_effective_system_instruction()`, `load_documents_metadata()`, `save_documents_metadata()` | **Business Document Grounding:** Ingests multi-format business files (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`), calculates token budgets, formats document boundaries, and injects context directly into Gemini Live's system prompt in-memory with zero vector database lookup latency. |
+| **`web_server.py`** | **986** | `setup_routes()`, `handle_index()`, `handle_get_status()`, `handle_get_recordings()`, `handle_get_recording_audio()`, `handle_get_recording_json()`, `handle_delete_recording()`, `handle_post_dial()`, `handle_post_dial_cancel()`, `handle_get_dial_status()`, `handle_get_knowledge_docs()`, `handle_post_knowledge_upload()`, `handle_delete_knowledge_doc()`, `handle_toggle_knowledge_doc()`, `handle_get_knowledge_preview()`, `handle_get_knowledge_summary()`, `handle_get_settings()`, `handle_post_settings()`, `handle_post_shutdown()`, `handle_get_logs()`, `handle_clear_logs()`, `broadcast_terminal_logs()`, `handle_ws_telemetry()`, `broadcast()`, `update_audio_levels()`, `handle_ws_browser_call()`, `set_in_call_state()`, `probe_hardware_sync()`, `check_hfp_hardware()`, `load_settings()`, `save_settings()` | **Asynchronous Web Platform & Telemetry Gateway:** High-performance `aiohttp` server hosting the web platform, handling real-time WebSockets for live VU meters and speech transcripts, serving REST APIs for recordings, knowledge files, and AI persona settings, and running the in-browser Voice Studio. |
+| **`security_guard.py`** | **96** | `start_security_watchdog()`, `enforce_security()`, `is_debugger_present()`, `is_forbidden_tool_running()`, `_watchdog_loop()` | **Anti-Tamper & Security Watchdog:** Protects compiled binaries against reverse-engineering, process injection, active debuggers (`x64dbg`, `IDA Pro`, `Cheat Engine`), and unauthorized runtime tampering. |
+| **`web/ (Frontend Suite)`** | **5,933** | `index.html (819 LOC)`, `styles.css (2,806 LOC)`, `app.js (2,308 LOC)` | **Obsidian Glassmorphic 2.0 Dashboard:** Complete frontend studio featuring 5 suites (Live Gateway, Voice Studio, Recordings Player, Knowledge Base, AI Persona), Web Audio API channel isolation, pulsating audio orb, and real-time WebSocket client. |
+| **`run.bat`** | **76** | `Automated launcher & venv setup` | Automatically validates Python 3.9+, initializes virtual environment (`venv`), installs dependencies, prompts for `GEMINI_API_KEY` on first launch, and opens the dashboard. |
+| **`build_v2_1_exe.bat & Callink_v2_1.spec`** | **143** | `Automated PyInstaller & PyArmor build script` | Bundles complete Python runtime, security guard, and web platform into standalone zero-dependency `Callink_v2.1.exe`. |
+| **`assets/`** | **—** | `Media Demos & Visuals` | Stores dashboard UI screenshots, architectural diagrams, and sample streamable call recordings (`call_demo_outbound.mp3`, `call_demo_outbound.mp4`). |
+| **`recordings/ (Runtime)`** | **—** | `Automated Call Storage` | Automatically created directory where synchronized stereo WAV call recordings and JSON transcripts are archived. |
+| **`knowledge/ (Runtime)`** | **—** | `Enterprise Document Store` | Automatically created directory housing uploaded business documents for prompt injection. |
+| **`settings.json (Runtime)`** | **—** | `Persisted Configuration` | Stores user-configured AI persona, selected voice, barge-in RMS threshold, grace periods, and language defaults. |
 
 ### 📖 Developer Study Guide & Reading Roadmap
 
