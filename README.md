@@ -529,6 +529,164 @@ callink/                                        # Total Codebase: ~10,466+ Lines
 | **`knowledge/ (Runtime)`** | **—** | `Enterprise Document Store` | Automatically created directory housing uploaded business documents for prompt injection. |
 | **`settings.json (Runtime)`** | **—** | `Persisted Configuration` | Stores user-configured AI persona, selected voice, barge-in RMS threshold, grace periods, and language defaults. |
 
+### 🔬 Detailed Function & Method Reference (By File)
+
+This section provides an exhaustive reference of all top-level functions and class methods across every module in Callink, detailing their specific operational responsibilities, inputs, and architectural mechanics.
+
+---
+
+#### 1. `gsm_gemini_gateway.py` (754 LOC) — *Master Application Orchestrator*
+* **`main()`**: Process bootstrap entry point; invokes `asyncio.run(main_async())` inside an OS-level exception handler to guarantee clean shutdown on SIGINT or unhandled exceptions.
+* **`main_async()`**: Master asynchronous event loop orchestrator. Initializes Windows COM single-threaded apartments, spawns the high-performance `aiohttp` web server, enforces process single-instance mutual exclusion, launches the stay-awake power guard, and coordinates the cellular call standby loop. Dynamically manages call pickup, pre-warmed session acquisition, and graceful teardown upon call termination.
+* **`watch_call_and_hfp()`**: Standby hardware polling loop running every 1.5s. Interrogates WinRT Telephony APIs (`PhoneCallManager`) and Bluetooth device registries. Detects incoming rings, triggers the Gemini pre-warmer, and yields call state transitions (`RINGING`, `CONNECTED`, `ENDED`) to the active call handler.
+* **`ensure_single_instance()`**: Creates a named Win32 kernel Mutex (`Global\\Callink_GSM_Gateway_Mutex`). If another instance of Callink is active, displays a warning dialog and cleanly exits to prevent dual-process audio and hardware driver conflicts.
+* **`ensure_gemini_api_key()`**: Validates that a valid Google Gemini API key is present in environment variables, `.env`, or `settings.json`. If missing on first launch, prompts the user via terminal and saves it securely.
+* **`TeeLogger.write(data) & TeeLogger.flush()`**: Custom stream interceptor replacing `sys.stdout` and `sys.stderr`. Appends console output to an in-memory ring buffer and dispatches live log entries over WebSockets to the web dashboard.
+
+---
+
+#### 2. `audio_bridge.py` (890 LOC) — *Bluetooth SCO Hardware Audio Bridge*
+* **`find_hfp_devices()`**: Enumerates all Windows audio endpoints via `sounddevice` / PortAudio, filtering specifically for Bluetooth Hands-Free Profile (HFP) input and output endpoints. Prioritizes low-latency direct WDM-KS (`Windows DirectSound / Kernel Streaming`) over WASAPI/MME.
+* **`find_active_bthhfenum_endpoints()`**: Low-level Windows COM MMDevice enumerator that inspects `bthhfenum.sys` registry endpoints to locate active Bluetooth SCO audio render and capture pins directly.
+* **`HFPBridge.start()`**: Initializes bidirectional audio streams (16 kHz, 16-bit PCM, mono) using either native low-latency WASAPI COM worker threads or PortAudio stream callbacks based on hardware capability.
+* **`HFPBridge.stop()`**: Atomically drains pending buffers, halts worker capture/render loops, terminates PortAudio streams, and releases hardware COM endpoint interfaces.
+* **`HFPBridge.is_healthy()`**: Diagnostic watchdog verifying that both capture and render streams are running and delivering valid audio frames without buffer underflows or hardware drops.
+* **`HFPBridge.input_callback(indata, frames, time_info, status)`**: High-frequency PortAudio capture callback; receives 20ms incoming caller microphone audio chunks over Bluetooth SCO, computes RMS energy for live VU meters, and pushes frames into the upstream queue for Gemini Live.
+* **`HFPBridge.output_callback(outdata, frames, time_info, status)`**: PortAudio playback callback; pulls synthesized AI audio from the jitter buffer, applies cosine-window anti-crackle envelope smoothing, and feeds frames to the Bluetooth phone link speaker.
+* **`HFPBridge.push_playback_audio(pcm_data)`**: Receives resampled 16 kHz audio chunks from Gemini Live, appends them to the playback queue, and releases buffering once the 150ms SCO cushion (4,800 bytes) threshold is achieved.
+* **`HFPBridge.flush_turn_playback()`**: Triggered when Gemini signals `turn_complete`; forces any remaining buffered audio to render through the speaker immediately, preventing trailing words from being clipped.
+* **`HFPBridge.clear_playback()`**: Flushes and empties the playback buffer instantaneously when caller speech is detected, executing zero-latency barge-in interruption.
+* **`HFPBridge.has_pending_playback()`**: Returns `True` if audio frames are queued or currently rendering through the speaker DAC.
+* **`HFPBridge.get_audio_levels()`**: Returns instantaneous input (caller) and output (AI) RMS audio levels for the dashboard telemetry meter.
+* **`HFPBridge._capture_worker() & HFPBridge._render_worker()`**: Low-level native WASAPI COM thread implementations that read and write audio buffers via `IAudioCaptureClient` and `IAudioRenderClient` with direct hardware clock timing.
+
+---
+
+#### 3. `gemini_live_bridge.py` (726 LOC) — *Gemini Live AI WebSocket Pipeline*
+* **`run_gemini_bridge(hfp_bridge, outbound_info, recorder, ...)`**: Primary live session manager for an active call. Establishes a bidirectional WebSocket connection to Google's `gemini-3.1-flash-live-preview`, configures voice, system instructions, and tools, and manages concurrent async tasks for audio streaming, response handling, and barge-in monitoring.
+* **`resample_for_hfp(audio_24k)`**: Standalone rate converter taking 24 kHz mono PCM from Gemini and resampling to 16 kHz for telephony via `audioop.ratecv`.
+* **`GeminiPrewarmer.start_prewarm()`**: Initiates a background WebSocket handshake to Gemini Live as soon as an incoming or outgoing call begins ringing.
+* **`GeminiPrewarmer.acquire_session()`**: Hands over the pre-warmed, fully authenticated WebSocket session as soon as the call connects, shaving 800ms to 1.5s off the initial conversational greeting latency.
+* **`GeminiPrewarmer.release()`**: Cleans up and disconnects any pre-warmed session if a call is declined, missed, or canceled before connecting.
+* **`GeminiPrewarmer.is_ready() & GeminiPrewarmer.is_active()`**: Query methods checking whether a pre-warmed session is currently established or actively connecting in the background.
+* **`GeminiPrewarmer._worker()`**: Background worker coroutine that performs the TLS handshake, sets session configuration (voice, system instructions, tools), and holds the connection ready.
+
+---
+
+#### 4. `audio_resampler.py` (36 LOC) — *High-Fidelity Audio Resampler*
+* **`resample_for_hfp(audio_24k)`**: Convenience functional wrapper around `HFPResampler.resample()`.
+* **`HFPResampler.__init__()`**: Initializes rate conversion filter state (`state = None`).
+* **`HFPResampler.resample(audio_data)`**: Converts 24 kHz audio blocks to 16 kHz using Python's native `audioop.ratecv`, preserving internal filter state across chunk boundaries to completely eliminate clicks, pops, and phase artifacts.
+* **`HFPResampler.reset()`**: Resets filter state between separate call turns.
+
+---
+
+#### 5. `power_guard.py` (40 LOC) — *Windows Power & Stay-Awake Guard*
+* **`prevent_sleep()`**: Invokes Windows Win32 API `kernel32.SetThreadExecutionState` with flags `ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_CONTINUOUS` to prevent Windows from entering sleep or idle throttling.
+* **`start_stay_awake_heartbeat()`**: Spawns a background daemon thread that periodically re-asserts execution state flags every 15 seconds, preventing laptops or desktops from suspending audio threads during standby.
+* **`allow_sleep()`**: Clears the execution state flags, restoring normal Windows power and sleep behavior upon application exit.
+
+---
+
+#### 6. `phone_audio_silencer.py` (106 LOC) — *Audio Loopback Silencer*
+* **`is_pc_voip_call_active()`**: Checks Windows audio sessions and running processes (`WhatsApp.exe`, `Teams.exe`, `Zoom.exe`, `Skype.exe`, `Telegram.exe`) to prevent silencing if the user is in an active PC desktop meeting.
+* **`set_phone_link_audio_silenced(silenced)`**: Interacts with Windows Core Audio endpoints via `pycaw` to locate `PhoneExperienceHost.exe` audio sessions and dynamically mute/unmute its speaker and mic feeds, eliminating acoustic feedback loops while Callink handles SCO audio.
+* **`PhoneLinkAudioSilencer.start()`**: Launches the background audio watchdog loop.
+* **`PhoneLinkAudioSilencer.stop()`**: Halts the watchdog and un-mutes Phone Link audio sessions.
+* **`PhoneLinkAudioSilencer._run()`**: Continuous polling thread checking every 2 seconds to ensure Phone Link remains muted throughout active cellular calls.
+
+---
+
+#### 7. `outbound_dialer.py` (321 LOC) — *Proactive Cellular Outbound Calling*
+* **`start_outbound_dial(phone_number, prompt_override, ...)`**: Records outbound dialing intent, formats the recipient number to E.164, and initiates dialing via system protocol or ADB.
+* **`cancel_outbound_dial()`**: Aborts a pending outbound call and cleans up dialing state flags.
+* **`trigger_system_dialer(phone_number)`**: Dispatches the Windows `tel:<number>` protocol URI to launch Phone Link's native dialer without window focus theft, falling back to Android ADB if configured.
+* **`hangup_current_call()`**: Sends call termination request or ADB keyevent `KEYCODE_ENDCALL` to cleanly end the cellular call.
+* **`clean_phone_number(raw)`**: Strips dashes, spaces, and extraneous punctuation, retaining only valid dialing characters (`+`, digits).
+* **`format_e164_number(raw, default_country)`**: Validates and prepends country code prefixes (e.g. `+1`, `+91`) to ensure compliant global telephony routing.
+* **`get_active_outbound()`**: Retrieves the current outbound call context (target number, business notes) if active and unexpired.
+* **`consume_active_outbound()`**: Atomically extracts and clears active outbound metadata when call connection is verified.
+* **`build_outbound_context(outbound_info)`**: Injects proactive caller context and campaign goals into the Gemini Live session instruction.
+* **`build_outbound_proactive_prompt(outbound_info)`**: Constructs the micro-prompt instructing Gemini Live to speak first immediately upon call pickup.
+* **`is_phone_link_call_connected()`**: Queries Windows WinRT `PhoneCallManager` to verify if the cellular call is officially in `Connected` state.
+* **`is_phone_link_call_present()`**: Checks whether any cellular call is active, ringing, or holding in the system.
+* **`is_call_transferred_to_pc() & trigger_transfer_to_pc_async()`**: Monitors and coordinates PC Bluetooth audio routing for Phone Link.
+* **`find_phone_link_window()`**: Locates Phone Link's window handle via Win32 `FindWindow` / `EnumWindows` if UI verification is required.
+
+---
+
+#### 8. `call_recorder.py` (236 LOC) — *Dual-Track Stereo WAV Recorder*
+* **`CallRecorder.start(call_id, caller_info)`**: Opens a new dual-track 16 kHz 16-bit PCM WAV container file on disk with a pre-allocated header for non-blocking stream recording.
+* **`CallRecorder.write_stereo_block(caller_pcm, ai_pcm)`**: Interleaves mono caller microphone PCM into Channel 0 (Left) and mono AI synthesized speech PCM into Channel 1 (Right) and commits frames to disk.
+* **`CallRecorder.add_transcript(speaker, text, offset_ms)`**: Logs timestamped conversational dialogue turns with millisecond accuracy.
+* **`CallRecorder.add_event(event_type, description, offset_ms)`**: Logs system lifecycle events (e.g. barge-in interruption, reconnection) into the transcript metadata.
+* **`CallRecorder.finish()`**: Finalizes the WAV header with exact byte counts, closes the audio stream, and writes the structured call summary JSON metadata to disk.
+* **`CallRecorder.get_summary()`**: Generates real-time call telemetry statistics (duration, packet count, turn count, interruption count).
+* **`get_all_recordings()`**: Scans the `recordings/` directory, parses JSON metadata cards, and returns a chronologically sorted list of calls for the web dashboard.
+* **`delete_recording(call_id)`**: Safely purges both the WAV audio file and JSON transcript file from disk.
+
+---
+
+#### 9. `knowledge_manager.py` (342 LOC) — *Business Document Grounding*
+* **`extract_text_from_file(file_bytes, filename)`**: Universal document parser supporting `.pdf` (`pypdf`), `.docx` (`python-docx`), `.txt`, `.md`, `.csv`, and `.json`, extracting sanitized clean plain text.
+* **`add_document(file_bytes, filename)`**: Saves document to `knowledge/` storage, parses text content, computes token count approximations, generates an ID, and updates `documents.json`.
+* **`delete_document(doc_id)`**: Deletes the stored document file and removes its metadata record.
+* **`toggle_document(doc_id, active)`**: Enables or disables an uploaded document for live prompt injection without deleting the source file.
+* **`get_all_documents()`**: Returns all uploaded documents with metadata, character counts, and preview snippets for the dashboard table.
+* **`get_document_full(doc_id)`**: Retrieves the complete extracted text of a document for full-screen preview modals in the web UI.
+* **`get_knowledge_summary()`**: Computes total document count, active count, and estimated token utilization for dashboard widgets.
+* **`build_knowledge_prompt()`**: Aggregates all active documents into an XML/Markdown formatted knowledge context block with clear isolation boundaries for prompt grounding.
+* **`get_effective_system_instruction(base_instruction, language, grounding_active)`**: Combines persona identity, language constraints, anti-hallucination rules, and dynamic knowledge base text into the final prompt sent to Gemini Live.
+* **`load_documents_metadata() & save_documents_metadata()`**: Handles atomic JSON serialization and deserialization of document metadata records.
+
+---
+
+#### 10. `web_server.py` (986 LOC) — *Asynchronous Web Platform & Telemetry Gateway*
+* **`WebGatewayServer.setup_routes()`**: Binds all REST API endpoints, WebSocket listeners, and static asset routes to the `aiohttp.web.Application` instance.
+* **`handle_index(request)`**: Serves the Obsidian Glassmorphic frontend dashboard (`web/index.html`).
+* **`handle_get_status(request)`**: Returns real-time system state (active call status, Bluetooth HFP endpoint, AI pre-warmer state, system uptime).
+* **`handle_get_recordings(request)`**: REST endpoint returning the list of recorded calls with duration and metadata.
+* **`handle_get_recording_audio(request)`**: Streams recorded stereo WAV audio files with range-request support for the web audio player.
+* **`handle_get_recording_json(request)`**: Serves structured call transcripts with speaker turn tags and timing data.
+* **`handle_delete_recording(request)`**: Deletes specified recording files.
+* **`handle_post_dial(request)`**: Receives outbound calling requests from the dashboard dialpad and triggers `start_outbound_dial()`.
+* **`handle_post_dial_cancel(request)`**: Cancels in-flight outbound dialing requests.
+* **`handle_get_dial_status(request)`**: Returns current status of outbound dialing attempts.
+* **`handle_get_knowledge_docs(request)`**: REST API listing all grounding documents.
+* **`handle_post_knowledge_upload(request)`**: Multipart form upload handler receiving and parsing business knowledge documents.
+* **`handle_delete_knowledge_doc(request) & handle_toggle_knowledge_doc(request)`**: Deletes or toggles document activation states.
+* **`handle_get_knowledge_preview(request) & handle_get_knowledge_summary(request)`**: Serves document text previews and knowledge stats.
+* **`handle_get_settings(request) & handle_post_settings(request)`**: Reads and persists AI persona instructions, voice selection, language, and VAD sensitivity parameters.
+* **`handle_post_shutdown(request)`**: Safely initiates graceful gateway shutdown from the web UI.
+* **`handle_get_logs(request) & handle_clear_logs(request)`**: Retrieves terminal logs ring buffer or clears log history.
+* **`handle_ws_telemetry(request)`**: High-frequency WebSocket endpoint broadcasting live VU levels, call events, and terminal stdout logs to browser clients.
+* **`handle_ws_browser_call(request)`**: In-browser Voice Studio WebSocket handler enabling direct mic-to-Gemini voice testing without cellular hardware.
+* **`broadcast(event_type, payload)`**: Pushes real-time JSON events to all active dashboard browser connections.
+* **`update_audio_levels(in_db, out_db)`**: Updates real-time audio VU levels for live waveform visualization.
+* **`probe_hardware_sync() & check_hfp_hardware()`**: Asynchronously scans Windows audio endpoints to monitor Bluetooth device connectivity.
+* **`load_settings() & save_settings()`**: Manages `settings.json` file read and write operations.
+* **`add_terminal_log(text)`**: Pushes terminal stdout/stderr messages to the ring buffer and connected telemetry WebSockets.
+
+---
+
+#### 11. `security_guard.py` (96 LOC) — *Anti-Tamper & Security Watchdog*
+* **`is_debugger_present()`**: Queries Win32 `kernel32.IsDebuggerPresent` and `CheckRemoteDebuggerPresent` to detect if the gateway process is running under an active debugger.
+* **`is_forbidden_tool_running()`**: Iterates through running system processes via `psutil` checking for known reverse-engineering tools (`x64dbg`, `ida64`, `ollydbg`, `cheatengine`).
+* **`enforce_security()`**: Immediate validation check executing on application boot; terminates process if unauthorized debugging or tampering is detected.
+* **`start_security_watchdog()`**: Launches a background watchdog thread running continuous periodic security checks throughout the application lifecycle.
+* **`_watchdog_loop()`**: Low-overhead daemon loop checking debugger and process integrity every 10 seconds.
+
+---
+
+#### 12. `web/app.js` (2,308 LOC) — *Frontend Dashboard Controller*
+* **`connectTelemetry()`**: Maintains resilient WebSocket connection to `/ws/telemetry` with automatic backoff reconnection and message routing.
+* **`renderVU() & updateOrbAnimation()`**: Renders 60 FPS live dual-channel VU meters and dynamic pulsating audio orb using canvas and CSS transforms.
+* **`playRecording(callId) & pauseRecording()`**: Web Audio API player supporting stereo channel isolation (Left: Caller, Right: AI) with dual waveform visualization.
+* **`startBrowserCall() & stopBrowserCall()`**: Captures browser microphone via Web Audio API, streams PCM to `/ws/browser-call`, and plays back Gemini responses in real time.
+* **`triggerOutboundDial(phoneNumber)`**: Sends REST dial request to initiate automated cellular calling.
+* **`uploadKnowledgeFile(file)`**: Sends multipart file uploads to `/api/knowledge/upload` with progress bar feedback.
+* **`savePersonaSettings()`**: Posts updated AI system instructions, selected Gemini voice, and barge-in sensitivity parameters to `/api/settings`.
+
 ### 📖 Developer Study Guide & Reading Roadmap
 
 To quickly master the architecture and inner mechanics of Callink, study the codebase in this recommended **5-stage roadmap**:
