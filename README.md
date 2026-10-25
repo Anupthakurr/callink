@@ -147,6 +147,9 @@ The result is a conversational turn-around latency of **~800ms to 1.2s**, comple
 
 ---
 
+<img width="3660" height="8818" alt="diagram" src="https://github.com/user-attachments/assets/22a36ca6-69d4-402c-9a1f-03e6c3614d9c" />
+
+
 ## ⚡ Latency Benchmark: Callink vs. Legacy Telephony
 
 Callink was engineered from first principles to overcome the prohibitive conversational latency inherent in traditional telephony architectures (Asterisk PBX + Twilio/Telnyx SIP trunks + Dograh/LiveKit proxy + cascaded STT &rarr; LLM &rarr; TTS pipelines).
